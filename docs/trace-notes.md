@@ -1,6 +1,6 @@
 # TRACE — Paper Notes and Benchmark Ideas
 
-Raw working notes on **TRACE: Trajectory-Relative Agent ContExt compression**, plus benchmark ideas that build on it. Feeds into [`compaction-study-brief.md`](../compaction-study-brief.md).
+Raw working notes on **TRACE: Trajectory-Relative Agent ContExt compression**, plus benchmark ideas that build on it. Feeds into [`compaction-study-brief.md`](compaction-study-brief.md).
 
 ## 1. What TRACE is about
 
