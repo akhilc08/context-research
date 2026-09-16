@@ -2,7 +2,7 @@
 
 Research cutoff September 13, 2026. The editable synthesis is `long-running-agents-research.docx`.
 
-This ledger originally covered 72 sources on long-running agents broadly (harness engineering, multi-agent orchestration, memory architectures, benchmarks, and YC products). It has been trimmed to the entries that bear directly on context compaction — what gets lost when an agent's history is summarized or evicted, and how that loss is measured or mitigated. Original entry IDs are kept as written (gaps in numbering mark removed entries) so they stay traceable to the source docx.
+This ledger originally covered 72 sources on long-running agents broadly (harness engineering, multi-agent orchestration, memory architectures, benchmarks, and YC products). It has been trimmed to the entries that bear directly on context compaction. These entries cover what gets lost when an agent's history is summarized or evicted and how that loss is measured or mitigated. Original entry IDs are kept as written (gaps in numbering mark removed entries) so they stay traceable to the source docx.
 
 Performance figures are author-reported. Repository availability means inspected release evidence, not a successful local reproduction. Month-only dates are intentionally less precise than verified day-level dates.
 
