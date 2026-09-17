@@ -6,6 +6,11 @@ Research on context management for long-running LLM coding agents, focused on co
 
 - [`docs/compaction-study-brief.md`](docs/compaction-study-brief.md): main research brief with hypotheses, related work, and the study plan.
 - [`docs/lightweight-verify-repair-brief.md`](docs/lightweight-verify-repair-brief.md): offshoot brief on fingerprint-check-and-patch for silently dropped context.
+- [`docs/potential_ideas/`](docs/potential_ideas/): candidate research ideas, each a narrow compaction loss mechanism paired with a cheap fix.
+  - [`position-dependent-constraint-retention.md`](docs/potential_ideas/position-dependent-constraint-retention.md)
+  - [`drift-detection-rollback.md`](docs/potential_ideas/drift-detection-rollback.md)
+  - [`cheap-compaction-validation-stand-in.md`](docs/potential_ideas/cheap-compaction-validation-stand-in.md)
+  - [`goal-resurrection-after-compaction.md`](docs/potential_ideas/goal-resurrection-after-compaction.md)
 - [`docs/trace-notes.md`](docs/trace-notes.md): working notes on the TRACE paper that supports the main brief.
 - [`docs/SOURCES.md`](docs/SOURCES.md): annotated source ledger.
 
