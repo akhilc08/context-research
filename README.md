@@ -11,6 +11,9 @@ Research on context management for long-running LLM coding agents, focused on co
   - [`drift-detection-rollback.md`](docs/potential_ideas/drift-detection-rollback.md)
   - [`cheap-compaction-validation-stand-in.md`](docs/potential_ideas/cheap-compaction-validation-stand-in.md)
   - [`goal-resurrection-after-compaction.md`](docs/potential_ideas/goal-resurrection-after-compaction.md)
+  - [`repair-vs-retention-compute-crossover.md`](docs/potential_ideas/repair-vs-retention-compute-crossover.md)
+  - [`recursive-compaction-trigger-ratchet.md`](docs/potential_ideas/recursive-compaction-trigger-ratchet.md)
+  - [`ratchet-vs-rescue-trigger-loss.md`](docs/potential_ideas/ratchet-vs-rescue-trigger-loss.md)
 - [`docs/trace-notes.md`](docs/trace-notes.md): working notes on the TRACE paper that supports the main brief.
 - [`docs/SOURCES.md`](docs/SOURCES.md): annotated source ledger.
 
