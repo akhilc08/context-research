@@ -2,6 +2,8 @@
 
 Date: 2026-09-18. Status: candidate direction from an external idea-generation and diversity-aware ranking pass (Elo-scored, selected as a "combine" in a top-3), not yet checked against the literature by this repo's own research process. No experiments run, not yet chosen for the main study.
 
+See [`../paper-plan.md`](../paper-plan.md) (idea C) for this idea's concretized benchmark, baseline, and proposed-method design. A very recent paper (CliffCompaction, arXiv 2609.26779) now gives the recursive-versus-source-anchored axis a real citable baseline instead of a hypothetical one; the related-work section there has been rewritten accordingly.
+
 ## Relationship to the compaction study
 
 Candidate offshoot of [`../compaction-study-brief.md`](../compaction-study-brief.md). Distinct from [`position-dependent-constraint-retention.md`](position-dependent-constraint-retention.md) in this folder: that idea varies *when* a constraint is stated relative to a compaction boundary, while this one varies the compaction *architecture* (recursive vs. source-anchored regeneration) as the causal lever behind loss of constraints whose trigger has not yet fired. They are siblings, not duplicates. See also [`ratchet-vs-rescue-trigger-loss.md`](ratchet-vs-rescue-trigger-loss.md), which merges this idea with [`repair-vs-retention-compute-crossover.md`](repair-vs-retention-compute-crossover.md).

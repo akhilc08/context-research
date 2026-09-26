@@ -2,6 +2,8 @@
 
 Date: 2026-09-18. Status: candidate direction from an external idea-generation and diversity-aware ranking pass (Elo-scored, selected as "divergent" in a top-3), not yet checked against the literature by this repo's own research process. No experiments run, not yet chosen for the main study.
 
+See [`../paper-plan.md`](../paper-plan.md) (idea B) for this idea's concretized benchmark, baseline, and proposed-method design, ranked as a strong second submission candidate.
+
 ## Relationship to the compaction study
 
 Candidate offshoot of [`../compaction-study-brief.md`](../compaction-study-brief.md), and a sharper, more mechanistic version of that brief's own H4 fix candidates and this folder's verification-cost question. It also refines a distinction TRACE's own notes gesture at without measuring precisely (see [`../trace-notes.md`](../trace-notes.md) section 2, "deletion" vs. "disorientation").

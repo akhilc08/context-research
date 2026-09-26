@@ -2,6 +2,8 @@
 
 Date: 2026-09-16. Status: candidate direction sketched through conversational research (parallel web-research sweeps), checked once for novelty and feasibility. No experiments run, not yet chosen for the main study.
 
+See [`../paper-plan.md`](../paper-plan.md) (idea F) for this idea's concretized benchmark, baseline, and proposed-method design, ranked as part of the recommended first submission.
+
 ## Relationship to the compaction study
 
 Candidate offshoot of [`compaction-study-brief.md`](../compaction-study-brief.md). Not as developed as that brief's Phase 1 and Phase 2 design; this is a proposal-stage sketch.

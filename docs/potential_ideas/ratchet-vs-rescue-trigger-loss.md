@@ -2,6 +2,8 @@
 
 Date: 2026-09-18. Status: candidate direction from an external idea-generation and diversity-aware ranking pass (Elo-scored, selected as a "combine" in a top-3), not yet checked against the literature by this repo's own research process. No experiments run, not yet chosen for the main study.
 
+See [`../paper-plan.md`](../paper-plan.md) (idea D) for this idea's concretized design, gated on the individual results of the two parent ideas (B and C there) landing first.
+
 ## Relationship to the compaction study
 
 Candidate offshoot of [`../compaction-study-brief.md`](../compaction-study-brief.md). This idea is a merge of two others in this folder: [`repair-vs-retention-compute-crossover.md`](repair-vs-retention-compute-crossover.md) and [`recursive-compaction-trigger-ratchet.md`](recursive-compaction-trigger-ratchet.md). The merge is not just a concatenation: it uses the repair-versus-retention compute split from the first idea as a diagnostic instrument for the causal claim of the second, applying it specifically to constraints already damaged by the recursive ratchet. If repair passes fail to rescue them while retention succeeds, that is simultaneously stronger evidence that the ratchet produces genuine deletion rather than a retrieval failure a cheap repair pass could fix.

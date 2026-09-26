@@ -2,6 +2,8 @@
 
 Date: 2026-09-16. Status: candidate direction sketched through conversational research (parallel web-research sweeps), checked once for novelty and feasibility. No experiments run, not yet chosen for the main study.
 
+See [`../paper-plan.md`](../paper-plan.md) (idea G) for this idea's concretized design and why it is ranked lowest priority there.
+
 ## Relationship to the compaction study
 
 Candidate offshoot of [`compaction-study-brief.md`](../compaction-study-brief.md) and, more directly, of [`lightweight-verify-repair-brief.md`](../lightweight-verify-repair-brief.md), whose fingerprint-check-and-patch pilot this direction proposes to extend. Not as developed as either brief's own plan; this is a proposal-stage sketch.

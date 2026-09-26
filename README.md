@@ -5,6 +5,8 @@ Research on context management for long-running LLM coding agents, focused on co
 ## Contents
 
 - [`docs/compaction-study-brief.md`](docs/compaction-study-brief.md): main research brief with hypotheses, related work, and the study plan.
+- [`docs/paper-plan.md`](docs/paper-plan.md): concrete benchmark and method designs for each idea below, ranked and prioritized toward a first submission.
+- [`docs/paper/paper.pdf`](docs/paper/paper.pdf): "Watchpoint Compaction," a general repair mechanism for two different compaction failure modes (a dropped rule, a resurrected stale goal), backed by roughly 2,200 real API trials. Includes a real negative result (a naive self-verification check that fails, and why) as part of its contribution, not just its narrative. Not yet reviewed or submitted anywhere; see its own Limitations section.
 - [`docs/lightweight-verify-repair-brief.md`](docs/lightweight-verify-repair-brief.md): offshoot brief on fingerprint-check-and-patch for silently dropped context.
 - [`docs/potential_ideas/`](docs/potential_ideas/): candidate research ideas, each a narrow compaction loss mechanism paired with a cheap fix.
   - [`position-dependent-constraint-retention.md`](docs/potential_ideas/position-dependent-constraint-retention.md)
