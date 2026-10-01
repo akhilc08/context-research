@@ -178,18 +178,18 @@ GOAL_EXTRACT_TEMPLATE = (
     "In one sentence, state what you currently understand your objective to be."
 )
 
-def watchpoint_v2_constraint(model_key, summary, tail, fact_text, keyword, label="Active rule"):
+def watchpoint_v2_constraint(model_key, summary, tail, fact_text, keyword, label="Active rule", audit_model=None):
     prompt = CONSTRAINT_EXTRACT_TEMPLATE.format(context=_render_context(summary, tail))
-    raw = call_llm(model_key, [{"role": "user", "content": prompt}], max_tokens=60, temperature=0.3)
+    raw = call_llm(audit_model or model_key, [{"role": "user", "content": prompt}], max_tokens=60, temperature=0.3)
     ok = keyword.lower() in raw.lower()
     if ok:
         return summary, False
     patched = (summary + f"\n\n[Watchpoint reminder] {label}: {fact_text}").strip()
     return patched, True
 
-def watchpoint_v2_goal(model_key, summary, tail, fact_text, g1_kw, g2_kw, label="Current objective"):
+def watchpoint_v2_goal(model_key, summary, tail, fact_text, g1_kw, g2_kw, label="Current objective", audit_model=None):
     prompt = GOAL_EXTRACT_TEMPLATE.format(context=_render_context(summary, tail))
-    raw = call_llm(model_key, [{"role": "user", "content": prompt}], max_tokens=60, temperature=0.3).lower()
+    raw = call_llm(audit_model or model_key, [{"role": "user", "content": prompt}], max_tokens=60, temperature=0.3).lower()
     hit_g2 = any(k in raw for k in g2_kw)
     hit_g1 = any(k in raw for k in g1_kw)
     ok = hit_g2 and not hit_g1
