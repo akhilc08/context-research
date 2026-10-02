@@ -41,12 +41,15 @@ SUMMARY_PROMPT = (
 )
 
 
-def compact(prior_summary, turns, words=120, instruction=None, tag="compact"):
-    """One compaction call: fold prior summary + turns into a new summary."""
+def compact(prior_summary, turns, words=120, instruction=None, tag="compact", max_tokens=None):
+    """One compaction call: fold prior summary + turns into a new summary.
+
+    max_tokens defaults to words * 3, which truncates about 7% of summaries mid-sentence;
+    studies started after 2026-10-02 01:30 should pass a larger value (e.g. words * 3 + 600)."""
     head = (instruction or SUMMARY_PROMPT).format(words=words)
     prior = f"[Summary of earlier turns]\n{prior_summary}\n\n" if prior_summary else ""
     prompt = f"{head}\n\n{prior}[Log]\n{render(turns)}"
-    return chat([{"role": "user", "content": prompt}], max_tokens=words * 3, temperature=0.3, tag=tag).strip()
+    return chat([{"role": "user", "content": prompt}], max_tokens=max_tokens or words * 3, temperature=0.3, tag=tag).strip()
 
 
 def run_recursive(chunks, tail_k=2, words=120, instruction=None, tag="compact"):
