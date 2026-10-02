@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E16, E18, E19, and E20 were still running. Their rows say so.
+Status: written while E3, E16, E18, and E20 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -32,7 +32,7 @@ Status: written while E3, E16, E18, E19, and E20 were still running. Their rows 
 | E15 `e15_rule_salience` | Why is an intact summarized rule violated more than a pinned one? | Framing ("Operator rule (active):") is the biggest factor, then exact wording; position and separation barely matter. Pinned rules beat raw history (6% vs 15%). Keep-rules and structured-list prompts scale to 20 rules over 16 rounds; structured is indistinguishable from pin-all. | `d1e3fc7` |
 | E16 `e16_schema_ablation` | Which sections of a structured compaction schema matter? | Running. | |
 | E17 `e17_operator_ledger` | A combined operator ledger (active framing, versioned facts, revocations, plan) vs pinning raw operator turns, including revoked and amended rules | Ledger 91% rule-state accuracy vs plain 50%, tying full context (88%) and pinning raw operator turns in order (89%). The ledger wins on amended rules (94% vs 73%) and goals (98% vs 55%) but not on revoked rules (81% vs 90%) and costs more tokens. Append-only rule pinning (E1 style) applies revoked rules 97% of the time and scores below plain (42%). E15's structured prompt keeps revoked rules in force. | `67db000` |
-| E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Running. | |
+| E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Timing matters only for plain summaries, and only through whether the current plan is still verbatim (83% next-step correct when it is, 23% when summarized). Checkpoint timing is best there (86% vs threshold 69%, Holm p = 0.07, replicated). Operator-aware timing hurts (43%). Model-judged timing ties the threshold at 4.5x the compaction input. With a structured prompt plus pinned operator messages, every timing ties full context (81 to 83%). | `1881c71` |
 | E20 `e20_revocation_format` | How to represent revoked and amended rules in a pinned rule block (omit, quote, permission phrasing, REVOKED label, struck raw turns) | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
@@ -46,6 +46,7 @@ These are cross-study readings, not pre-registered claims. All rest on one model
 4. **Overwrite-style memory needs history.** Newest-value-wins stores fail questions about earlier values; a versioned store fixes this with no cost on current values (E4, E14).
 5. **Deletion comes first, then disorientation.** In E2 the goal is lost to recent work rather than resurrected; in E8 the plan disappears, and position trackers (ledgers, progress watchpoints) do not help while the plan is gone. Once the plan is pinned, at realistic length the agent's position also matters (E13): plan plus a progress note beats either alone. The wording of that note is a safety issue, since "result not observed" invites re-running non-idempotent commands, while "status unknown, check first" does not.
 6. **Some old-paper claims did not survive.** The anchor prompt did not help goals (E2). The naive self-check failed on Space Bunny but looked fine on Nemotron (X1), so "self-verification is misleading" may be model-specific.
+8. **Protect content and timing stops mattering.** With a structured prompt and pinned operator messages, every compaction timing policy ties full context (E19). Timing only matters for plain summaries, through whether the active plan happens to still be verbatim; a harness-verified checkpoint helps there, and model-judged timing adds cost without benefit.
 7. **Full context is not a perfect ceiling, but compaction is not a cure for rot.** Full transcripts lost to compacted or pinned contexts on goals (E2) and rules (E15). E12 shows the cause is distraction by relevant-looking work, not length: neutral filler of the same length caused no loss. Plain compaction helps goals only in shorter sessions and never helps rules; pinning is the arm that is robust at every length.
 
 ## Known issues that cut across studies
