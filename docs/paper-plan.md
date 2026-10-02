@@ -2,6 +2,31 @@
 
 Date: 2026-09-23. Status: seven candidate directions turned into concrete, runnable experiment designs. Ideas A and F have since gone through three rounds of real experiments (roughly 2,200 trials total) and produced an actual proposed method, not just a measurement study: **Watchpoint Compaction**, a general repair mechanism for both failure modes, written up in **[`docs/paper/paper.pdf`](paper/paper.pdf)**, with all code and raw results in [`docs/potential_ideas/pilots/recency-study/`](potential_ideas/pilots/recency-study/). The path there is itself worth knowing: the grace-buffer and anchor fixes described below were the first cut and are now reframed inside the paper as ad hoc baselines that each only solve one failure mode; a first version of Watchpoint Compaction (naive self-judgment) failed outright; a second version (extraction-based checking) is what the paper actually reports as working. The other five ideas (B, C, D, E, G) remain design-only. This document is a planning and prioritization document, not a pre-registration.
 
+## Decision (2026-10-01): move the Watchpoint evaluation onto public benchmarks
+
+The goal-resurrection results in the current paper have a soundness problem. The v2 Watchpoint detector matches the model's restatement against the same per-scenario keyword lists the grader uses (`lib.py`, `watchpoint_v2_goal` and `agent_decide_goal`), so the detector effectively sees the answer key. The constraint experiment does not share this leak, since its grader reads the `DECISION:` line, but its detector keywords were still hand-picked per scenario. Treat the goal-task Watchpoint numbers, including the 50 to 85% selectivity claim, as unreliable until rerun.
+
+The next round changes three things:
+
+- **Rule violations move to τ-bench** (Sierra, github.com/sierra-research/tau-bench). It grades the final database state after real tool calls, so grading uses no keywords and measures actions rather than stated intent. τ-bench keeps its policy in the system prompt, which real harnesses do not compact, so the adaptation moves the policy into the conversation history and forces compaction partway through each task. That makes it a modified τ-bench, and results must be reported as such.
+- **Goal resurrection moves to Supersede** (arXiv 2606.27472). It states a fact, supersedes it, and has gold answers for which value is current, so grading needs no keywords either. Its data format has not been inspected yet.
+- **The Watchpoint detector becomes keyword-free (v4).** The model restates its current belief, and a comparator call checks that restatement against the tracked value, seeing only those two sentences. Keywords stay in grading only. The code exists in a scratch directory and has not been run; a run was started and stopped before producing results.
+
+The synthetic benchmark stays as a cheap, controlled companion, with goal grading moved from keywords to an LLM judge validated against roughly 50 hand-labeled responses.
+
+Status: decided, both benchmarks dry-run with zero model calls on 2026-10-01 (API keys unset during every check).
+
+- **τ-bench** (commit 59a200c). Replaying each task's gold actions through the environment, with a stub in place of the LLM-simulated user, scored 1.0 on all 665 tasks checked: 115 retail test, 50 airline test, 500 retail train. As a negative control, dropping the last gold action dropped the score to 0 on 81 of 93 tasks. The other 12 are expected, because in those tasks the dropped action is a read-only lookup and τ-bench grades by comparing the final database. The replay script is [`potential_ideas/pilots/benchmark-dryrun/taubench_replay.py`](potential_ideas/pilots/benchmark-dryrun/taubench_replay.py). The retail policy is a 5,718-character document plus 7 rules, currently in the system prompt.
+- **Supersede** (commit 677993d, Apache-2.0). Its 21 offline tests pass. Its grader marks 200 of 200 synthetic gold answers correct and 200 of 200 stale answers stale. Its synthetic tasks are too short to need compaction (the example is 607 characters across 13 sessions), so the real data matters: LongMemEval's oracle split (Hugging Face `xiaowu0162/longmemeval-cleaned`, 15 MB) gives 78 knowledge-update tasks of 18,084 to 43,078 characters (median 27,347). Supersede's own "NOTES" condition already acts as recursive compaction: the agent sees one session at a time and rewrites a 300-character notes field without ever re-reading raw sessions, so Watchpoint can be inserted after each rewrite without changing the harness.
+
+Issues found while checking Supersede:
+
+- Two LongMemEval gold answers are integers (120 and 1300), and Supersede's grader crashes on them. They must be converted to text first.
+- 13 of the 78 gold answers are long phrases, where Supersede's string-match grader is unreliable. LongMemEval's own protocol grades with an LLM judge instead, which costs tokens.
+- LongMemEval does not label stale values, so the stale-answer rate (the metric goal resurrection is about) is only available on Supersede's synthetic tasks, not the real ones. Reporting stale use on real data would need stale values labeled by hand or by a judge.
+
+Next steps, all of which need model tokens: add the compaction hooks to τ-bench, insert Watchpoint after Supersede's notes rewrite, run a small pilot, then the full comparison.
+
 ## How to read this
 
 Each idea below gets the same treatment: a one-line "beats X by doing Y" headline, an exact benchmark construction, the exact baselines it has to beat, the exact proposed method, the metric and falsification condition, a compute budget, and a related-work delta that was re-checked this session (not carried over unchanged from the original idea files). Where this session's research changed the novelty picture, that is called out explicitly rather than folded in silently.
