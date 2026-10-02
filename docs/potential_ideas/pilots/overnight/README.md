@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E22 and E23 were still running. Their rows say so.
+Status: written while E22, E23, and E24 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -46,6 +46,7 @@ The other components (provenance-attributing prompt, standing-rules list, striki
 | E21 `e21_combined_recipe` | Held-out validation of the combined recipe (structured provenance prompt, in-order operator pin with revocations struck, versioned facts, safe plan note, checkpoint timing) on fresh mixed sessions, with ablations | Pre-registered, 60 fresh sessions: recipe 92.7% mean per-item accuracy vs full context 84.8%, pin_raw 83.4%, structured 59.4%, plain 32.9%; all 8 confirmatory tests survive Holm, at about a third of full context's tokens. Ablations: the operator pin (-7.9 points) and the plan block with safe progress note (-3.2) do nearly all the work; provenance, standing-rules list, revocation striking, timing, and fact block show no measurable effect here. Full context re-ran an in-flight non-idempotent step in 17 of 30 sessions, the recipe in 6. | `1995bf7` |
 | E22 `e22_taubench_process` | Confirmatory process-graded τ-bench (retail and airline, policy stripped from tool descriptions, deterministic violation detectors, 2 trials) | Running. | |
 | E23 `e23_pin_scale` | Does operator-turn pinning hold up with 20 to 200 operator turns, and which bounded alternative (directive filter, periodic consolidation, ledger) keeps accuracy? | Running. | |
+| E24 `e24_minimal_recipe` | Pre-registered confirmation of the two-component minimal recipe (non-inferior to the full recipe, better than full context and pin_raw) on a new domain | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
 ## What the night suggests
