@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E16, E17, E18, and E19 were still running. Their rows say so.
+Status: written while E3, E16, E18, and E19 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -31,7 +31,7 @@ Status: written while E3, E16, E17, E18, and E19 were still running. Their rows 
 | E14 `e14_versioned_pin` | Pin each fact's value history instead of only the newest value | Versioned pin 95% vs newest-value pin 83% on LongMemEval (Holm p = 0.025), history questions 19% to 85%, current questions unchanged, beats token-matched notes. Canonical keys add nothing measurable. | `c8b76c3` |
 | E15 `e15_rule_salience` | Why is an intact summarized rule violated more than a pinned one? | Framing ("Operator rule (active):") is the biggest factor, then exact wording; position and separation barely matter. Pinned rules beat raw history (6% vs 15%). Keep-rules and structured-list prompts scale to 20 rules over 16 rounds; structured is indistinguishable from pin-all. | `d1e3fc7` |
 | E16 `e16_schema_ablation` | Which sections of a structured compaction schema matter? | Running. | |
-| E17 `e17_operator_ledger` | A combined operator ledger (active framing, versioned facts, revocations, plan) vs pinning raw operator turns, including revoked and amended rules | Running. | |
+| E17 `e17_operator_ledger` | A combined operator ledger (active framing, versioned facts, revocations, plan) vs pinning raw operator turns, including revoked and amended rules | Ledger 91% rule-state accuracy vs plain 50%, tying full context (88%) and pinning raw operator turns in order (89%). The ledger wins on amended rules (94% vs 73%) and goals (98% vs 55%) but not on revoked rules (81% vs 90%) and costs more tokens. Append-only rule pinning (E1 style) applies revoked rules 97% of the time and scores below plain (42%). E15's structured prompt keeps revoked rules in force. | `67db000` |
 | E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
@@ -39,7 +39,7 @@ Status: written while E3, E16, E17, E18, and E19 were still running. Their rows 
 
 These are cross-study readings, not pre-registered claims. All rest on one model plus a small replication, synthetic transcripts, and stated-intent decisions rather than executed tool calls.
 
-1. **Pinning beats checking.** In E1, E2, E4, E7, E8, and E15, always reinjecting operator-authored content (rules, goals, the original request) ties or beats Watchpoint's check-then-patch, at lower cost. Watchpoint's selectivity mostly disappears where loss is common: it patched 89 to 99% of the time in E1 and E4. The old paper's own conclusion ("pin rules") extends to goals and plans.
+1. **Pinning beats checking, if the pin can be updated.** In E1, E2, E4, E7, E8, and E15, always reinjecting operator-authored content (rules, goals, the original request) ties or beats Watchpoint's check-then-patch, at lower cost. Watchpoint's selectivity mostly disappears where loss is common: it patched 89 to 99% of the time in E1 and E4. The caveat is E17: an append-only rule pin keeps enforcing rules the operator later revoked (97% of the time) and ignores amendments, scoring below plain compaction. Pinning must carry updates, either by keeping operator turns in order or by a ledger that records revocations and amendments, and the same applies to facts (E14).
 2. **Tell the compactor what to keep instead of repairing afterwards.** A one-sentence keep-rules prompt (E6, E15), a structured prompt (E9, E10), and a provenance-attributing prompt (E5) each beat post-hoc detection and repair. Paired-continuation and round-trip gates added cost without matching a better prompt (E10).
 3. **How a kept fact is presented matters, not just whether it survives.** An intact rule inside a narrative summary is still violated 26 to 28% of the time, against 6 to 8% when framed as an active operator rule (E6, E15).
 4. **Overwrite-style memory needs history.** Newest-value-wins stores fail questions about earlier values; a versioned store fixes this with no cost on current values (E4, E14).
