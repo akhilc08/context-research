@@ -1,0 +1,2081 @@
+[
+ {
+  "name": "resend_frost_alert_sms_batch",
+  "goal": "Re-send the current frost warning SMS to the North Field farmers in two batches and verify delivery activity.",
+  "steps": [
+   {
+    "title": "Read current frost warning",
+    "command": "curl -sS https://api.furrow.example/v1/alerts/frost-2026-02-14",
+    "output": "{\"id\":\"frost-2026-02-14\",\"severity\":\"critical\",\"message\":\"Frost expected tonight\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/alerts/frost-2026-02-14 | jq -r '.message'"
+   },
+   {
+    "title": "List North Field recipients",
+    "command": "curl -sS 'https://api.furrow.example/v1/farms/north-field/farmers?alert=frost-2026-02-14' | jq -r '.[] | [.id,.phone,.name] | @tsv'",
+    "output": "18 farmers with phone numbers listed",
+    "idempotent": true,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/farms/north-field/farmers?alert=frost-2026-02-14' | jq 'length'"
+   },
+   {
+    "title": "Send first SMS batch",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send -H 'Content-Type: application/json' -d '{\"recipient_ids\":[\"farmer-104\",\"farmer-108\",\"farmer-112\",\"farmer-116\",\"farmer-120\",\"farmer-124\"],\"message\":\"Frost expected tonight. Protect sensitive crops and irrigation equipment.\"}'",
+    "output": "{\"batch\":\"sms-frost-2026-02-14-a\",\"accepted\":6}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send/batches/sms-frost-2026-02-14-a' | jq -r '.accepted'"
+   },
+   {
+    "title": "Record first batch submission",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send -H 'Content-Type: application/json' -d '{\"recipient_ids\":[\"farmer-128\",\"farmer-132\",\"farmer-136\",\"farmer-140\",\"farmer-144\",\"farmer-148\"],\"message\":\"Frost expected tonight. Protect sensitive crops and irrigation equipment.\"}'",
+    "output": "{\"batch\":\"sms-frost-2026-02-14-b\",\"accepted\":6}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send/batches/sms-frost-2026-02-14-b' | jq -r '.accepted'"
+   },
+   {
+    "title": "Check gateway delivery status",
+    "command": "curl -sS 'https://api.furrow.example/v1/providers/twilio/deliveries?alert_id=frost-2026-02-14' | jq -r '[.[] | select(.status==\"delivered\")] | length'",
+    "output": "12",
+    "idempotent": true,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/providers/twilio/deliveries?alert_id=frost-2026-02-14' | jq 'length'"
+   },
+   {
+    "title": "Send final SMS batch",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send -H 'Content-Type: application/json' -d '{\"recipient_ids\":[\"farmer-152\",\"farmer-156\",\"farmer-160\",\"farmer-164\",\"farmer-168\",\"farmer-172\"],\"message\":\"Frost expected tonight. Protect sensitive crops and irrigation equipment.\"}'",
+    "output": "{\"batch\":\"sms-frost-2026-02-14-c\",\"accepted\":6}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send/batches/sms-frost-2026-02-14-c' | jq -r '.accepted'"
+   },
+   {
+    "title": "Append alert audit event",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/audit-events -H 'Content-Type: application/json' -d '{\"event_type\":\"frost_sms_resent\",\"alert_id\":\"frost-2026-02-14\",\"farm_id\":\"north-field\",\"operator\":\"oncall-elm\"}'",
+    "output": "{\"event_id\":\"audit-78431\",\"event_type\":\"frost_sms_resent\"}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/audit-events?event_type=frost_sms_resent&alert_id=frost-2026-02-14' | jq 'length'"
+   },
+   {
+    "title": "Confirm all submissions",
+    "command": "curl -sS 'https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send/batches' | jq -r '[.[] | .accepted] | add'",
+    "output": "18",
+    "idempotent": true,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/alerts/frost-2026-02-14/sms-send/batches' | jq 'length'"
+   }
+  ],
+  "id": "p000"
+ },
+ {
+  "name": "backfill_gateway_serials",
+  "goal": "Backfill serials for gateways imported from the North Field inventory and record the correction in the registry.",
+  "steps": [
+   {
+    "title": "Inspect missing gateway serials",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"SELECT gateway_id, firmware_slot, serial_number FROM gateways WHERE farm_id = 'north-field' AND serial_number IS NULL ORDER BY gateway_id;\"",
+    "output": "6 gateways with NULL serial_number",
+    "idempotent": true,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT count(*) FROM gateways WHERE farm_id = 'north-field' AND serial_number IS NULL;\" | grep -qx 6"
+   },
+   {
+    "title": "Read North Field gateway map",
+    "command": "curl -sS https://api.furrow.example/v1/farms/north-field/gateways | jq -r '.[] | [.gateway_id,.hardware_serial] | @tsv'",
+    "output": "Gateway-to-serial mapping downloaded for 6 devices",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/farms/north-field/gateways | jq 'length'"
+   },
+   {
+    "title": "Update first gateway serial",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"UPDATE gateways SET serial_number = 'NF-GW-240001', updated_at = now() WHERE gateway_id = 'gw-nf-2401' AND farm_id = 'north-field';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT serial_number FROM gateways WHERE gateway_id = 'gw-nf-2401';\" | grep -qx NF-GW-240001"
+   },
+   {
+    "title": "Update second gateway serial",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"UPDATE gateways SET serial_number = 'NF-GW-240002', updated_at = now() WHERE gateway_id = 'gw-nf-2402' AND farm_id = 'north-field';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT serial_number FROM gateways WHERE gateway_id = 'gw-nf-2402';\" | grep -qx NF-GW-240002"
+   },
+   {
+    "title": "Check registry import counts",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"SELECT count(*) AS north_field_gateways, count(serial_number) AS serials_present FROM gateways WHERE farm_id = 'north-field';\"",
+    "output": "north_field_gateways=18, serials_present=8",
+    "idempotent": true,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT count(*) FROM gateways WHERE farm_id = 'north-field' AND serial_number IS NOT NULL;\" | grep -qx 8"
+   },
+   {
+    "title": "Update third gateway serial",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"UPDATE gateways SET serial_number = 'NF-GW-240003', updated_at = now() WHERE gateway_id = 'gw-nf-2403' AND farm_id = 'north-field';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT serial_number FROM gateways WHERE gateway_id = 'gw-nf-2403';\" | grep -qx NF-GW-240003"
+   },
+   {
+    "title": "Append backfill audit record",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"INSERT INTO gateway_backfill_audit (gateway_id, serial_number, farm_id, actor) VALUES ('gw-nf-2404', 'NF-GW-240004', 'north-field', 'oncall-elm');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT count(*) FROM gateway_backfill_audit WHERE gateway_id = 'gw-nf-2404' AND serial_number = 'NF-GW-240004';\" | grep -Eq '^[1-9][0-9]*$'"
+   },
+   {
+    "title": "Verify serial coverage",
+    "command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -c \"SELECT count(*) AS remaining_missing FROM gateways WHERE farm_id = 'north-field' AND serial_number IS NULL;\"",
+    "output": "remaining_missing=2",
+    "idempotent": true,
+    "verify_command": "PGPASSWORD=furrow-dev psql -h 127.0.0.1 -U furrow -d device_registry -Atc \"SELECT count(*) FROM gateways WHERE farm_id = 'north-field' AND serial_number IS NULL;\" | grep -qx 2"
+   }
+  ],
+  "id": "p001"
+ },
+ {
+  "name": "rotate_mqtt_device_credentials",
+  "goal": "Rotate credentials for field devices fw-north-042 and fw-south-017, publish the replacement configuration, and verify that the retired credentials are rejected.",
+  "steps": [
+   {
+    "title": "Inspect current MQTT credentials",
+    "command": "curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/clients?list=true\" | jq '[.data[] | select(.username==\"fw-north-042\" or .username==\"fw-south-017\") | {clientid,username,connected_at}]'",
+    "output": "[{\"clientid\":\"fw-north-042\",\"username\":\"fw-north-042\",\"connected_at\":\"2026-04-18T09:12:04Z\"},{\"clientid\":\"fw-south-017\",\"username\":\"fw-south-017\",\"connected_at\":\"2026-04-18T09:13:27Z\"}]",
+    "idempotent": true,
+    "verify_command": "curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/clients?list=true\" | jq '[.data[] | select(.clientid==\"fw-north-042\" or .clientid==\"fw-south-017\") | .clientid]'"
+   },
+   {
+    "title": "Capture retired credential fingerprints",
+    "command": "printf '%s\\n' 'fw-north-042 sha256:9f2c7e1d4a6b8c0e' 'fw-south-017 sha256:3b6a1d8f5c2e9074' | tee /var/lib/furrow/rotation-2026-04-18.retired",
+    "output": "fw-north-042 sha256:9f2c7e1d4a6b8c0e\nfw-south-017 sha256:3b6a1d8f5c2e9074",
+    "idempotent": true,
+    "verify_command": "test \"$(wc -l < /var/lib/furrow/rotation-2026-04-18.retired)\" -eq 2 && sha256sum /var/lib/furrow/rotation-2026-04-18.retired"
+   },
+   {
+    "title": "Delete retired MQTT authentications",
+    "command": "curl -sS -X DELETE -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users/fw-north-042\" && curl -sS -X DELETE -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users/fw-south-017\"",
+    "output": "Deleted authentication users fw-north-042 and fw-south-017",
+    "idempotent": false,
+    "verify_command": "curl -sS -o /dev/null -w '%{http_code}\\n' -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users/fw-north-042\""
+   },
+   {
+    "title": "Create replacement MQTT authentications",
+    "command": "curl -sS -X POST -H \"Authorization: Bearer $EMQX_API_TOKEN\" -H 'Content-Type: application/json' -d '{\"user_id\":\"fw-north-042\",\"password\":\"FurrowNew-042!Apr26\"}' \"http://emqx.internal:8083/api/v5/authentication/password:users\" && curl -sS -X POST -H \"Authorization: Bearer $EMQX_API_TOKEN\" -H 'Content-Type: application/json' -d '{\"user_id\":\"fw-south-017\",\"password\":\"FurrowNew-017!Apr26\"}' \"http://emqx.internal:8083/api/v5/authentication/password:users\"",
+    "output": "Created password users fw-north-042 and fw-south-017",
+    "idempotent": false,
+    "verify_command": "curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users\" | jq '[.data[] | select(.user_id==\"fw-north-042\" or .user_id==\"fw-south-017\") | .user_id] | sort'"
+   },
+   {
+    "title": "Publish replacement device credentials",
+    "command": "printf '%s' '{\"firmware\":\"iot-gateway-7.4.1\",\"credentials\":{\"fw-north-042\":\"FurrowNew-042!Apr26\",\"fw-south-017\":\"FurrowNew-017!Apr26\"},\"issued_at\":\"2026-04-18T10:00:00Z\"}' | nats pub mqtt.field-config.fw-north-042 --server nats://nats.internal:4222 --count 1 && printf '%s' '{\"firmware\":\"iot-gateway-7.4.1\",\"credentials\":{\"fw-north-042\":\"FurrowNew-042!Apr26\",\"fw-south-017\":\"FurrowNew-017!Apr26\"},\"issued_at\":\"2026-04-18T10:00:00Z\"}' | nats pub mqtt.field-config.fw-south-017 --server nats://nats.internal:4222 --count 1",
+    "output": "Published 2 field configuration messages",
+    "idempotent": false,
+    "verify_command": "nats sub --server nats://nats.internal:4222 --count 0 --dump mqtt.field-config.fw-north-042 --timeout 1s 2>/dev/null | head -c 0; curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/rules\" | jq '.data | length'"
+   },
+   {
+    "title": "Restart device configuration rollout",
+    "command": "kubectl -n furrow annotate deployment iot-config-publisher furrow.dev/credential-rotation-2026-04-18='applied' --overwrite",
+    "output": "deployment.apps/iot-config-publisher annotated",
+    "idempotent": false,
+    "verify_command": "kubectl -n furrow get deployment iot-config-publisher -o jsonpath='{.metadata.annotations.furrow\\.dev/credential-rotation-2026-04-18}{\"\\n\"}'"
+   },
+   {
+    "title": "Verify replacement broker users",
+    "command": "curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users\" | jq -r '.data[] | select(.user_id==\"fw-north-042\" or .user_id==\"fw-south-017\") | .user_id' | sort",
+    "output": "fw-north-042\nfw-south-017",
+    "idempotent": true,
+    "verify_command": "curl -sS -H \"Authorization: Bearer $EMQX_API_TOKEN\" \"http://emqx.internal:8083/api/v5/authentication/password:users\" | jq '[.data[] | select(.user_id==\"fw-north-042\" or .user_id==\"fw-south-017\")] | length'"
+   },
+   {
+    "title": "Verify retired credentials denied",
+    "command": "EMQX_USERNAME=fw-north-042 EMQX_PASSWORD='FurrowOld-042!Mar26' mqtttest -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem --timeout 5s",
+    "output": "Connection rejected: bad username or password",
+    "idempotent": true,
+    "verify_command": "grep -F 'fw-north-042 sha256:9f2c7e1d4a6b8c0e' /var/lib/furrow/rotation-2026-04-18.retired >/dev/null && printf 'retired fingerprint recorded\\n'"
+   }
+  ],
+  "id": "p002"
+ },
+ {
+  "name": "reprocess_lora_dead_letters",
+  "goal": "Replay selected dead-lettered LoRa payloads from the farm-07 dead-letter stream into sensor-ingest and record the replay activity.",
+  "steps": [
+   {
+    "title": "List dead-lettered LoRa messages",
+    "command": "nats stream view FURROW_LORA_DLQ --server nats://nats.internal:4222 --count 20 | jq -c 'select(.subject|test(\"lora|farm-07\")) | {seq,subject,payload}'",
+    "output": "Selected 6 dead-letter messages from farm-07",
+    "idempotent": true,
+    "verify_command": "nats stream info FURROW_LORA_DLQ --server nats://nats.internal:4222 | jq '{messages:.state.messages,consumers:.state.consumer_count}'"
+   },
+   {
+    "title": "Export payloads for replay",
+    "command": "nats stream view FURROW_LORA_DLQ --server nats://nats.internal:4222 --count 6 --raw > /var/lib/furrow/replay/farm-07-2026-04-18.jsonl && wc -l /var/lib/furrow/replay/farm-07-2026-04-18.jsonl",
+    "output": "6 payloads exported to /var/lib/furrow/replay/farm-07-2026-04-18.jsonl",
+    "idempotent": true,
+    "verify_command": "test -s /var/lib/furrow/replay/farm-07-2026-04-18.jsonl && sha256sum /var/lib/furrow/replay/farm-07-2026-04-18.jsonl"
+   },
+   {
+    "title": "Replay soil moisture payload",
+    "command": "printf '%s\\n' '{\"device_id\":\"soil-f07-118\",\"captured_at\":\"2026-04-18T08:41:12Z\",\"metric\":\"soil_moisture\",\"value\":31.7,\"unit\":\"pct\"}' | nats pub sensor.ingest.lora.soil --server nats://nats.internal:4222 --count 1",
+    "output": "Published soil_moisture payload for soil-f07-118",
+    "idempotent": false,
+    "verify_command": "nats stream view SENSOR_INGEST --server nats://nats.internal:4222 --count 100 | jq -c 'select(.subject==\"sensor.ingest.lora.soil\") | .payload' | tail -1"
+   },
+   {
+    "title": "Replay leaf wetness payload",
+    "command": "printf '%s\\n' '{\"device_id\":\"leaf-f07-204\",\"captured_at\":\"2026-04-18T08:43:09Z\",\"metric\":\"leaf_wetness\",\"value\":0.64,\"unit\":\"ratio\"}' | nats pub sensor.ingest.lora.leaf --server nats://nats.internal:4222 --count 1",
+    "output": "Published leaf_wetness payload for leaf-f07-204",
+    "idempotent": false,
+    "verify_command": "nats stream view SENSOR_INGEST --server nats://nats.internal:4222 --count 100 | jq -c 'select(.subject==\"sensor.ingest.lora.leaf\") | .payload' | tail -1"
+   },
+   {
+    "title": "Replay irrigation pressure payload",
+    "command": "printf '%s\\n' '{\"device_id\":\"pressure-f07-077\",\"captured_at\":\"2026-04-18T08:45:51Z\",\"metric\":\"line_pressure\",\"value\":182.4,\"unit\":\"kPa\"}' | nats pub sensor.ingest.lora.pressure --server nats://nats.internal:4222 --count 1",
+    "output": "Published line_pressure payload for pressure-f07-077",
+    "idempotent": false,
+    "verify_command": "nats stream view SENSOR_INGEST --server nats://nats.internal:4222 --count 100 | jq -c 'select(.subject==\"sensor.ingest.lora.pressure\") | .payload' | tail -1"
+   },
+   {
+    "title": "Append replay audit record",
+    "command": "psql -h timescaledb.internal -U furrow -d furrow -c \"INSERT INTO dead_letter_replays(replay_id,stream,subject,payload_device_id,replayed_at) VALUES ('replay-2026-04-18-farm07','FURROW_LORA_DLQ','sensor.ingest.lora','soil-f07-118',now());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h timescaledb.internal -U furrow -d furrow -Atc \"SELECT count(*) FROM dead_letter_replays WHERE replay_id='replay-2026-04-18-farm07';\""
+   },
+   {
+    "title": "Notify replay completion channel",
+    "command": "curl -sS -X POST -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" -H 'Content-Type: application/json; charset=utf-8' -d '{\"channel\":\"#fw-lora-ops\",\"text\":\"Farm 07 LoRa dead-letter replay completed: 3 payloads were republished at 2026-04-18T10:05:00Z.\"}' https://slack.com/api/chat.postMessage | jq -r '.ok'",
+    "output": "true",
+    "idempotent": false,
+    "verify_command": "curl -sS -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" 'https://slack.com/api/conversations.history?channel=C08FURROW07&limit=20' | jq -r '.messages[]?.text' | grep -F 'Farm 07 LoRa dead-letter replay completed' | tail -1"
+   },
+   {
+    "title": "Check replayed sensor readings",
+    "command": "psql -h timescaledb.internal -U furrow -d furrow -c \"SELECT device_id,metric,value,recorded_at FROM sensor_readings WHERE device_id IN ('soil-f07-118','leaf-f07-204','pressure-f07-077') AND recorded_at >= '2026-04-18 10:00:00+00' ORDER BY recorded_at;\"",
+    "output": "3 replayed rows returned for the farm-07 devices",
+    "idempotent": true,
+    "verify_command": "psql -h timescaledb.internal -U furrow -d furrow -Atc \"SELECT count(*) FROM sensor_readings WHERE device_id IN ('soil-f07-118','leaf-f07-204','pressure-f07-077') AND recorded_at >= '2026-04-18 10:00:00+00';\""
+   }
+  ],
+  "id": "p003"
+ },
+ {
+  "name": "cutover_farm_042_to_v2_scheduler",
+  "goal": "Cut farm-042 over from the legacy irrigation scheduler to the v2 scheduler and verify that field devices and the control plane are synchronized.",
+  "steps": [
+   {
+    "title": "Check farm scheduler status",
+    "command": "curl -fsS https://furrow.example.com/api/v1/farms/farm-042/scheduler-status | jq -c '{farm_id,active_scheduler,cutover_state,updated_at}'",
+    "output": "{\"farm_id\":\"farm-042\",\"active_scheduler\":\"legacy\",\"cutover_state\":\"ready\",\"updated_at\":\"2025-03-08T14:02:11Z\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://furrow.example.com/api/v1/farms/farm-042/scheduler-status | jq -r '.cutover_state'"
+   },
+   {
+    "title": "Read current device assignments",
+    "command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT device_id, zone_id, firmware_version FROM device_assignments WHERE farm_id='farm-042' ORDER BY device_id;\"",
+    "output": "device_id      zone_id    firmware_version\nvalve-042-07   zone-7     3.8.1\npump-042-01    zone-7     3.8.1",
+    "idempotent": true,
+    "verify_command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT count(*) FROM device_assignments WHERE farm_id='farm-042';\""
+   },
+   {
+    "title": "Append cutover audit event",
+    "command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"INSERT INTO scheduler_cutover_events(farm_id,from_scheduler,to_scheduler,event_type,recorded_at) VALUES ('farm-042','legacy','v2','cutover_started',now());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT count(*) FROM scheduler_cutover_events WHERE farm_id='farm-042' AND event_type='cutover_started';\""
+   },
+   {
+    "title": "Enqueue scheduler migration job",
+    "command": "nats --server nats://nats-0.furrow.svc.cluster.local:4222 pub irrigation.migration.farm-042 '{\"farm_id\":\"farm-042\",\"target\":\"v2\",\"migration_id\":\"migration-042-v2-0308\"}'",
+    "output": "Published 75 B message to subject irrigation.migration.farm-042",
+    "idempotent": false,
+    "verify_command": "nats --server nats://nats-0.furrow.svc.cluster.local:4222 stream report MIGRATIONS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Send field cutover command",
+    "command": "mosquitto_pub -h emqx.furrow.svc.cluster.local -p 1883 -t 'farms/farm-042/zones/zone-7/commands' -q 1 -m '{\"action\":\"adopt_scheduler\",\"scheduler\":\"v2\",\"farm_id\":\"farm-042\",\"zone_id\":\"zone-7\",\"migration_id\":\"migration-042-v2-0308\"}'",
+    "output": "Published command to farms/farm-042/zones/zone-7/commands",
+    "idempotent": false,
+    "verify_command": "mosquitto_sub -h emqx.furrow.svc.cluster.local -p 1883 -t 'farms/farm-042/zones/zone-7/status' -C 1 -W 5 | jq -c '{zone_id,scheduler,command_state}'"
+   },
+   {
+    "title": "Set active scheduler configuration",
+    "command": "kubectl exec -n furrow irrigation-scheduler-0 -- sh -c \"curl -fsS -X PUT http://127.0.0.1:8080/farms/farm-042/scheduler -H 'Content-Type: application/json' -d '{\\\"active_scheduler\\\":\\\"v2\\\"}'\"",
+    "output": "scheduler updated: farm-042 active_scheduler=v2",
+    "idempotent": true,
+    "verify_command": "kubectl exec -n furrow irrigation-scheduler-0 -- sh -c \"curl -fsS http://127.0.0.1:8080/farms/farm-042/scheduler | jq -r '.active_scheduler'\""
+   },
+   {
+    "title": "Verify v2 control-plane state",
+    "command": "curl -fsS https://furrow.example.com/api/v1/farms/farm-042/scheduler-status | jq -c '{farm_id,active_scheduler,cutover_state,pending_commands}'",
+    "output": "{\"farm_id\":\"farm-042\",\"active_scheduler\":\"v2\",\"cutover_state\":\"completed\",\"pending_commands\":0}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://furrow.example.com/api/v1/farms/farm-042/scheduler-status | jq -e '.active_scheduler == \"v2\" and .cutover_state == \"completed\"'"
+   },
+   {
+    "title": "Read device migration acknowledgements",
+    "command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT device_id, acknowledged_at, reported_scheduler FROM device_cutover_acknowledgements WHERE farm_id='farm-042' ORDER BY acknowledged_at DESC LIMIT 10;\"",
+    "output": "device_id      acknowledged_at           reported_scheduler\nvalve-042-07   2025-03-08 14:04:02+00     v2\npump-042-01    2025-03-08 14:04:05+00     v2",
+    "idempotent": true,
+    "verify_command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT count(*) FROM device_cutover_acknowledgements WHERE farm_id='farm-042' AND reported_scheduler='v2';\""
+   }
+  ],
+  "id": "p004"
+ },
+ {
+  "name": "publish_crop_coefficient_release_kcb_v2",
+  "goal": "Publish the crop coefficient table release kcb-v2-2025-03-08, announce it to downstream services, and verify the published checksum.",
+  "steps": [
+   {
+    "title": "Check current coefficient release",
+    "command": "curl -fsS https://furrow.example.com/api/v1/crop-coefficient-releases/current | jq -c '{release_id,table_version,published_at}'",
+    "output": "{\"release_id\":\"kcb-v1-2025-02-14\",\"table_version\":\"2025.02\",\"published_at\":\"2025-02-14T09:15:00Z\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://furrow.example.com/api/v1/crop-coefficient-releases/current | jq -r '.release_id'"
+   },
+   {
+    "title": "Validate release table checksum",
+    "command": "sha256sum /opt/furrow/releases/kcb-v2-2025-03-08.csv",
+    "output": "9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170  /opt/furrow/releases/kcb-v2-2025-03-08.csv",
+    "idempotent": true,
+    "verify_command": "test \"$(sha256sum /opt/furrow/releases/kcb-v2-2025-03-08.csv | cut -d' ' -f1)\" = \"9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170\" && echo checksum-ok"
+   },
+   {
+    "title": "Create release registry record",
+    "command": "curl -fsS -X POST https://furrow.example.com/api/v1/crop-coefficient-releases -H 'Content-Type: application/json' --data '{\"release_id\":\"kcb-v2-2025-03-08\",\"table_version\":\"2025.03\",\"object\":\"gs://furrow-releases/crop-coefficients/kcb-v2-2025-03-08.csv\",\"sha256\":\"9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170\"}'",
+    "output": "{\"release_id\":\"kcb-v2-2025-03-08\",\"status\":\"published\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS https://furrow.example.com/api/v1/crop-coefficient-releases/kcb-v2-2025-03-08 | jq -c '{release_id,status,sha256}'"
+   },
+   {
+    "title": "Append release publication event",
+    "command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"INSERT INTO crop_coefficient_release_events(release_id,event_type,object_uri,created_at) VALUES ('kcb-v2-2025-03-08','published','gs://furrow-releases/crop-coefficients/kcb-v2-2025-03-08.csv',now());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT count(*) FROM crop_coefficient_release_events WHERE release_id='kcb-v2-2025-03-08' AND event_type='published';\""
+   },
+   {
+    "title": "Publish release notification",
+    "command": "nats --server nats://nats-0.furrow.svc.cluster.local:4222 pub crop-coefficient.releases '{\"release_id\":\"kcb-v2-2025-03-08\",\"table_version\":\"2025.03\",\"sha256\":\"9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170\"}'",
+    "output": "Published 174 B message to subject crop-coefficient.releases",
+    "idempotent": false,
+    "verify_command": "nats --server nats://nats-0.furrow.svc.cluster.local:4222 stream report CROP_COEFFICIENTS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Post Slack release announcement",
+    "command": "curl -fsS -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxb-furrow-release-2025' -H 'Content-Type: application/json; charset=utf-8' --data '{\"channel\":\"#fw-crop-coefficients\",\"text\":\"Crop coefficient table release kcb-v2-2025-03-08 is published and available to irrigation services.\",\"username\":\"furrow-release-bot\"}'",
+    "output": "{\"ok\":true,\"channel\":\"C08KCB2025\",\"ts\":\"1772976245.001\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C08KCB2025&limit=20' -H 'Authorization: Bearer xoxb-furrow-release-2025' | jq -r '.messages[] | select(.text | contains(\"kcb-v2-2025-03-08\")) | .ts' | head -n 1"
+   },
+   {
+    "title": "Verify published release metadata",
+    "command": "curl -fsS https://furrow.example.com/api/v1/crop-coefficient-releases/kcb-v2-2025-03-08 | jq -c '{release_id,table_version,status,object,sha256}'",
+    "output": "{\"release_id\":\"kcb-v2-2025-03-08\",\"table_version\":\"2025.03\",\"status\":\"published\",\"object\":\"gs://furrow-releases/crop-coefficients/kcb-v2-2025-03-08.csv\",\"sha256\":\"9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://furrow.example.com/api/v1/crop-coefficient-releases/kcb-v2-2025-03-08 | jq -e '.status == \"published\" and .sha256 == \"9b4f0e8c2a1d7f6e3c5b9a0d8e2f1c4b7a6d9e0f3c2b1a8e7d6c5b4a3928170\"'"
+   },
+   {
+    "title": "Read release audit trail",
+    "command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT release_id,event_type,object_uri,created_at FROM crop_coefficient_release_events WHERE release_id='kcb-v2-2025-03-08' ORDER BY created_at DESC LIMIT 5;\"",
+    "output": "release_id             event_type  object_uri                                                       created_at\nkcb-v2-2025-03-08    published   gs://furrow-releases/crop-coefficients/kcb-v2-2025-03-08.csv 2025-03-08 14:04:05+00",
+    "idempotent": true,
+    "verify_command": "kubectl exec -n furrow timescaledb-0 -- psql -U furrow -d furrow -c \"SELECT count(*) FROM crop_coefficient_release_events WHERE release_id='kcb-v2-2025-03-08' AND event_type='published';\""
+   }
+  ],
+  "id": "p005"
+ },
+ {
+  "name": "credit_sensor_downtime_customers",
+  "goal": "Credit the three affected farm accounts for the confirmed sensor downtime period and notify each customer about the applied credit.",
+  "steps": [
+   {
+    "title": "Confirm downtime incident scope",
+    "command": "psql -d furrow -c \"SELECT incident_id, customer_id, device_id, started_at, ended_at FROM sensor_downtime_incidents WHERE incident_id = 'INC-2025-0417' ORDER BY customer_id, device_id;\"",
+    "output": "3 customer/device outage rows returned for INC-2025-0417.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS outage_rows FROM sensor_downtime_incidents WHERE incident_id = 'INC-2025-0417';\""
+   },
+   {
+    "title": "Calculate account credit totals",
+    "command": "python3 -c \"import json, subprocess; rows=json.loads(subprocess.check_output(['psql','-d','furrow','-At','-F','|','-c',\\\"SELECT customer_id, sum(duration_minutes * 0.02)::numeric(10,2) FROM sensor_downtime_incidents WHERE incident_id = 'INC-2025-0417' GROUP BY customer_id ORDER BY customer_id;\\\"])); print(json.dumps(rows))\"",
+    "output": "Calculated credits: FARM-104=$18.40, FARM-208=$11.60, FARM-391=$24.80.",
+    "idempotent": true,
+    "verify_command": "python3 -c \"import subprocess; print(subprocess.check_output(['psql','-d','furrow','-At','-c',\\\"SELECT customer_id || ':' || sum(duration_minutes * 0.02)::numeric(10,2) FROM sensor_downtime_incidents WHERE incident_id = 'INC-2025-0417' GROUP BY customer_id ORDER BY customer_id;\\\"], text=True))\""
+   },
+   {
+    "title": "Create credit backfill job",
+    "command": "nats pub furrow.credit.backfill '{\"job_id\":\"JOB-CREDIT-2025-0417\",\"incident_id\":\"INC-2025-0417\",\"requested_by\":\"ops-alex\"}'",
+    "output": "Published credit backfill request JOB-CREDIT-2025-0417 to JetStream.",
+    "idempotent": false,
+    "verify_command": "nats stream info FURROW_JOBS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Insert customer credit records",
+    "command": "psql -d furrow -c \"INSERT INTO customer_credits (credit_id, customer_id, incident_id, amount, reason, created_at) VALUES ('CR-F104-0417','FARM-104','INC-2025-0417',18.40,'sensor downtime','2025-04-17T16:05:00Z'), ('CR-F208-0417','FARM-208','INC-2025-0417',11.60,'sensor downtime','2025-04-17T16:05:00Z'), ('CR-F391-0417','FARM-391','INC-2025-0417',24.80,'sensor downtime','2025-04-17T16:05:00Z');\"",
+    "output": "INSERT 0 3 customer credit records.",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT credit_id, customer_id, amount FROM customer_credits WHERE incident_id = 'INC-2025-0417' ORDER BY credit_id;\""
+   },
+   {
+    "title": "Publish customer credit notices",
+    "command": "for channel in fw-billing-alerts fw-customer-success; do curl -sS -X POST \"https://hooks.slack.com/services/T04/B07/$channel\" -H 'Content-Type: application/json' --data '{\"text\":\"Downtime credits applied for incident INC-2025-0417: FARM-104 $18.40, FARM-208 $11.60, FARM-391 $24.80.\"}' >/dev/null; done",
+    "output": "Posted the credit summary to #fw-billing-alerts and #fw-customer-success.",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://slack.com/api/conversations.history?token=xoxb-furrow-ops&channel=C07BILLING&limit=20' | jq -r '.messages[] | select(.text | contains(\"INC-2025-0417\")) | .ts'"
+   },
+   {
+    "title": "Append credit audit event",
+    "command": "nats pub furrow.audit.events '{\"event_type\":\"downtime_credits_applied\",\"incident_id\":\"INC-2025-0417\",\"job_id\":\"JOB-CREDIT-2025-0417\",\"actor\":\"ops-alex\"}'",
+    "output": "Published downtime_credits_applied audit event.",
+    "idempotent": false,
+    "verify_command": "nats stream view FURROW_AUDIT --count 20 --json | jq -r '.message | select(.event_type == \"downtime_credits_applied\" and .incident_id == \"INC-2025-0417\")'"
+   },
+   {
+    "title": "Enqueue customer email delivery",
+    "command": "nats pub furrow.notifications.email '{\"notification_id\":\"NOTICE-CREDIT-2025-0417-F104\",\"customer_id\":\"FARM-104\",\"subject\":\"Sensor downtime credit applied\",\"amount\":18.40,\"incident_id\":\"INC-2025-0417\"}'",
+    "output": "Enqueued NOTICE-CREDIT-2025-0417-F104 for delivery to FARM-104.",
+    "idempotent": false,
+    "verify_command": "nats stream view FURROW_NOTIFICATIONS --count 20 --json | jq -r '.message | select(.notification_id == \"NOTICE-CREDIT-2025-0417-F104\")'"
+   },
+   {
+    "title": "Verify credit backfill results",
+    "command": "psql -d furrow -c \"SELECT c.customer_id, count(k.credit_id) AS credits, coalesce(sum(k.amount),0) AS total FROM customers c LEFT JOIN customer_credits k ON k.customer_id = c.customer_id AND k.incident_id = 'INC-2025-0417' WHERE c.customer_id IN ('FARM-104','FARM-208','FARM-391') GROUP BY c.customer_id ORDER BY c.customer_id;\"",
+    "output": "FARM-104: 1 credit, $18.40; FARM-208: 1 credit, $11.60; FARM-391: 1 credit, $24.80.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS credits, sum(amount) AS total FROM customer_credits WHERE incident_id = 'INC-2025-0417';\""
+   }
+  ],
+  "id": "p006"
+ },
+ {
+  "name": "replay_weather_webhook_partner",
+  "goal": "Replay the five weather webhook deliveries from batch BATCH-WX-2025-0412 to the partner endpoint and record the resulting delivery attempts.",
+  "steps": [
+   {
+    "title": "Confirm weather replay batch",
+    "command": "psql -d furrow -c \"SELECT delivery_id, partner_id, event_id, event_type, created_at FROM weather_webhook_deliveries WHERE batch_id = 'BATCH-WX-2025-0412' ORDER BY delivery_id;\"",
+    "output": "5 weather webhook deliveries selected for BATCH-WX-2025-0412.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS deliveries FROM weather_webhook_deliveries WHERE batch_id = 'BATCH-WX-2025-0412';\""
+   },
+   {
+    "title": "Check partner delivery configuration",
+    "command": "curl -sS https://partners.example.net/v1/weather/config | jq -r '.partner_id, .endpoint, .active'",
+    "output": "partner_id=PARTNER-MET-17 endpoint=https://partners.example.net/v1/weather/webhook active=true.",
+    "idempotent": true,
+    "verify_command": "curl -sS https://partners.example.net/v1/weather/config | jq -e '.active == true and .endpoint == \"https://partners.example.net/v1/weather/webhook\"'"
+   },
+   {
+    "title": "Create webhook replay job",
+    "command": "nats pub furrow.weather.replay '{\"job_id\":\"JOB-WX-REPLAY-2025-0412\",\"batch_id\":\"BATCH-WX-2025-0412\",\"partner_id\":\"PARTNER-MET-17\",\"requested_by\":\"ops-jordan\"}'",
+    "output": "Published replay request JOB-WX-REPLAY-2025-0412 to JetStream.",
+    "idempotent": false,
+    "verify_command": "nats stream info FURROW_JOBS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Publish replayed webhook messages",
+    "command": "for delivery in WX-0412-001 WX-0412-002 WX-0412-003 WX-0412-004 WX-0412-005; do payload=$(psql -d furrow -At -c \"SELECT payload FROM weather_webhook_deliveries WHERE delivery_id = '$delivery' AND batch_id = 'BATCH-WX-2025-0412'\"); nats pub furrow.weather.partner.PARTNER-MET-17 \"{\\\"delivery_id\\\":\\\"$delivery\\\",\\\"batch_id\\\":\\\"BATCH-WX-2025-0412\\\",\\\"payload\\\":$payload}\" >/dev/null; done; echo 'published 5 replayed weather messages'",
+    "output": "published 5 replayed weather messages",
+    "idempotent": false,
+    "verify_command": "nats stream view FURROW_WEATHER_REPLAY --count 20 --json | jq -r '.message | select(.batch_id == \"BATCH-WX-2025-0412\") | .delivery_id'"
+   },
+   {
+    "title": "Send partner webhook deliveries",
+    "command": "for delivery in WX-0412-001 WX-0412-002 WX-0412-003 WX-0412-004 WX-0412-005; do payload=$(psql -d furrow -At -c \"SELECT payload FROM weather_webhook_deliveries WHERE delivery_id = '$delivery' AND batch_id = 'BATCH-WX-2025-0412'\"); curl -sS -X POST https://partners.example.net/v1/weather/webhook -H 'Content-Type: application/json' -H 'X-Furrow-Delivery: '$delivery --data \"$payload\" >/dev/null; done; echo 'POSTed 5 weather deliveries to PARTNER-MET-17'",
+    "output": "POSTed 5 weather deliveries to PARTNER-MET-17.",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://partners.example.net/v1/weather/deliveries?batch_id=BATCH-WX-2025-0412' | jq -r '.deliveries[] | [.delivery_id,.status] | @tsv'"
+   },
+   {
+    "title": "Record partner delivery attempts",
+    "command": "psql -d furrow -c \"INSERT INTO weather_partner_delivery_attempts (attempt_id, delivery_id, partner_id, batch_id, response_code, attempted_at) VALUES ('ATT-WX-0412-001','WX-0412-001','PARTNER-MET-17','BATCH-WX-2025-0412',202,'2025-04-12T18:00:00Z'), ('ATT-WX-0412-002','WX-0412-002','PARTNER-MET-17','BATCH-WX-2025-0412',202,'2025-04-12T18:00:01Z'), ('ATT-WX-0412-003','WX-0412-003','PARTNER-MET-17','BATCH-WX-2025-0412',202,'2025-04-12T18:00:02Z'), ('ATT-WX-0412-004','WX-0412-004','PARTNER-MET-17','BATCH-WX-2025-0412',202,'2025-04-12T18:00:03Z'), ('ATT-WX-0412-005','WX-0412-005','PARTNER-MET-17','BATCH-WX-2025-0412',202,'2025-04-12T18:00:04Z');\"",
+    "output": "INSERT 0 5 partner delivery attempt records.",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT delivery_id, response_code FROM weather_partner_delivery_attempts WHERE batch_id = 'BATCH-WX-2025-0412' ORDER BY delivery_id;\""
+   },
+   {
+    "title": "Append replay audit event",
+    "command": "nats pub furrow.audit.events '{\"event_type\":\"weather_webhook_batch_replayed\",\"batch_id\":\"BATCH-WX-2025-0412\",\"partner_id\":\"PARTNER-MET-17\",\"job_id\":\"JOB-WX-REPLAY-2025-0412\",\"actor\":\"ops-jordan\"}'",
+    "output": "Published weather_webhook_batch_replayed audit event.",
+    "idempotent": false,
+    "verify_command": "nats stream view FURROW_AUDIT --count 20 --json | jq -r '.message | select(.event_type == \"weather_webhook_batch_replayed\" and .batch_id == \"BATCH-WX-2025-0412\")'"
+   },
+   {
+    "title": "Verify weather replay results",
+    "command": "psql -d furrow -c \"SELECT a.batch_id, a.partner_id, count(*) AS attempts, count(*) FILTER (WHERE a.response_code = 202) AS accepted FROM weather_partner_delivery_attempts a WHERE a.batch_id = 'BATCH-WX-2025-0412' GROUP BY a.batch_id, a.partner_id;\"",
+    "output": "BATCH-WX-2025-0412 PARTNER-MET-17: 5 attempts, 5 accepted.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS accepted FROM weather_partner_delivery_attempts WHERE batch_id = 'BATCH-WX-2025-0412' AND partner_id = 'PARTNER-MET-17' AND response_code = 202;\""
+   }
+  ],
+  "id": "p007"
+ },
+ {
+  "name": "migrate_drone_imagery_to_gcs",
+  "goal": "Copy and publish drone imagery from the legacy archive into the new analytics bucket, then verify object visibility.",
+  "steps": [
+   {
+    "title": "Inspect legacy imagery objects",
+    "command": "gcloud storage ls gs://furrow-drone-legacy-2025/images/ --recursive | head -n 20",
+    "output": "gs://furrow-drone-legacy-2025/images/field-07/2025-06-14/ortho-001.tif",
+    "idempotent": true,
+    "verify_command": "gcloud storage ls gs://furrow-drone-legacy-2025/images/ --recursive | head -n 20"
+   },
+   {
+    "title": "Create migration destination prefix",
+    "command": "gcloud storage mb -p gs://furrow-drone-imagery-2025",
+    "output": "gs://furrow-drone-imagery-2025",
+    "idempotent": true,
+    "verify_command": "gcloud storage buckets describe gs://furrow-drone-imagery-2025 --format='value(name)'"
+   },
+   {
+    "title": "Copy first orthomosaic batch",
+    "command": "gsutil -m cp -r gs://furrow-drone-legacy-2025/images/field-07/2025-06-14 gs://furrow-drone-imagery-2025/field-07/",
+    "output": "Copying 18 objects to gs://furrow-drone-imagery-2025/field-07/",
+    "idempotent": false,
+    "verify_command": "gsutil ls gs://furrow-drone-imagery-2025/field-07/2025-06-14 | wc -l"
+   },
+   {
+    "title": "Publish imagery catalog record",
+    "command": "gcloud firestore databases update furrow-prod --collection=imagery --document=field-07-2025-06-14 --type=add --field-updates=state=published",
+    "output": "Document field-07-2025-06-14 updated",
+    "idempotent": false,
+    "verify_command": "gcloud firestore databases get furrow-prod --collection=imagery --document=field-07-2025-06-14 --field=state"
+   },
+   {
+    "title": "Queue orthomosaic processing job",
+    "command": "gcloud run jobs execute furrow-ortho-reprocess-2025 --region=us-central1 --args=--input=gs://furrow-drone-imagery-2025/field-07/2025-06-14,--output=gs://furrow-ortho-tiles-2025/field-07-2025-06-14",
+    "output": "Job furrow-ortho-reprocess-2025 execution created",
+    "idempotent": false,
+    "verify_command": "gcloud run jobs executions list --job=furrow-ortho-reprocess-2025 --region=us-central1 --limit=1 --format='value(name)'"
+   },
+   {
+    "title": "Send migration completion notice",
+    "command": "curl -sS -X POST https://hooks.slack.com/services/T08FURROW/B09IMAGERY/xyz-migration-alert -H 'Content-Type: application/json' -d '{\"channel\":\"#fw-imagery\",\"text\":\"Drone imagery for field-07 on 2025-06-14 was copied and queued for processing.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "gcloud logging read 'resource.type=\"http_load_balancer\" AND textPayload:\"field-07\"' --limit=1 --format='value(timestamp)'"
+   },
+   {
+    "title": "Validate destination object count",
+    "command": "gsutil ls gs://furrow-drone-imagery-2025/field-07/2025-06-14 | wc -l",
+    "output": "18",
+    "idempotent": true,
+    "verify_command": "gsutil ls gs://furrow-drone-imagery-2025/field-07/2025-06-14 | wc -l"
+   },
+   {
+    "title": "Confirm processing execution status",
+    "command": "gcloud run jobs executions list --job=furrow-ortho-reprocess-2025 --region=us-central1 --limit=1 --format='value(status.conditions[0].type,status.conditions[0].state)'",
+    "output": "Succeeded True",
+    "idempotent": true,
+    "verify_command": "gcloud run jobs executions describe $(gcloud run jobs executions list --job=furrow-ortho-reprocess-2025 --region=us-central1 --limit=1 --format='value(name)') --region=us-central1"
+   }
+  ],
+  "id": "p008"
+ },
+ {
+  "name": "issue_replacement_device_certificates",
+  "goal": "Replace the certificates for one field gateway without interrupting MQTT authentication and confirm the new credential is active.",
+  "steps": [
+   {
+    "title": "Inspect current device certificate",
+    "command": "openssl x509 -in /etc/furrow/certs/gateway-fg-042.crt -noout -subject -serial -dates",
+    "output": "subject=CN=fg-042.furrow.example serial=7A21D4 dates=notBefore=Jun 10 08:00:00 2025 GMT,notAfter=Jun 10 08:00:00 2026 GMT",
+    "idempotent": true,
+    "verify_command": "openssl x509 -in /etc/furrow/certs/gateway-fg-042.crt -noout -serial"
+   },
+   {
+    "title": "Prepare replacement certificate request",
+    "command": "openssl req -new -newkey rsa:3072 -nodes -keyout /etc/furrow/certs/gateway-fg-042-replacement.key -out /tmp/gateway-fg-042-replacement.csr -subj '/CN=fg-042.furrow.example/O=Furrow Devices'",
+    "output": "Generating a RSA private key",
+    "idempotent": false,
+    "verify_command": "openssl req -in /tmp/gateway-fg-042-replacement.csr -noout -subject -verify"
+   },
+   {
+    "title": "Create registry credential record",
+    "command": "curl -sS -X POST https://registry.furrow.example/v1/devices/fg-042/credentials -H 'Authorization: Bearer furrow-registry-token' -H 'Content-Type: application/json' -d '{\"kind\":\"replacement\",\"serial_prefix\":\"FG042R\"}'",
+    "output": "created credential record cred_01JZG7Q4F2",
+    "idempotent": false,
+    "verify_command": "curl -sS https://registry.furrow.example/v1/devices/fg-042/credentials -H 'Authorization: Bearer furrow-registry-token'"
+   },
+   {
+    "title": "Sign replacement device certificate",
+    "command": "openssl x509 -req -in /tmp/gateway-fg-042-replacement.csr -CA /etc/furrow/pki/furrow-device-ca.crt -CAkey /etc/furrow/pki/furrow-device-ca.key -CAcreateserial -out /etc/furrow/certs/gateway-fg-042-replacement.crt -days 365 -sha256",
+    "output": "Certificate request self-signature ok",
+    "idempotent": false,
+    "verify_command": "openssl x509 -in /etc/furrow/certs/gateway-fg-042-replacement.crt -noout -subject -issuer -serial"
+   },
+   {
+    "title": "Publish MQTT trust update",
+    "command": "curl -sS -X POST https://registry.furrow.example/v1/devices/fg-042/certificate-events -H 'Authorization: Bearer furrow-registry-token' -H 'Content-Type: application/json' -d '{\"event\":\"certificate_issued\",\"credential_id\":\"cred_01JZG7Q4F2\",\"serial_prefix\":\"FG042R\"}'",
+    "output": "event_id evt_01JZG82M7K",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://registry.furrow.example/v1/devices/fg-042/certificate-events?limit=5' -H 'Authorization: Bearer furrow-registry-token'"
+   },
+   {
+    "title": "Notify field operations channel",
+    "command": "curl -sS -X POST https://hooks.slack.com/services/T08FURROW/B09DEVICES/xyz-device-alert -H 'Content-Type: application/json' -d '{\"channel\":\"#fw-devices\",\"text\":\"Replacement certificate for gateway fg-042 has been issued; deployment is ready.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "gcloud logging read 'textPayload:\"fg-042\" AND textPayload:\"Replacement certificate\"' --limit=1 --format='value(timestamp)'"
+   },
+   {
+    "title": "Check replacement certificate validity",
+    "command": "openssl verify -CAfile /etc/furrow/pki/furrow-device-ca.crt /etc/furrow/certs/gateway-fg-042-replacement.crt",
+    "output": "/etc/furrow/certs/gateway-fg-042-replacement.crt: OK",
+    "idempotent": true,
+    "verify_command": "openssl x509 -in /etc/furrow/certs/gateway-fg-042-replacement.crt -noout -checkend 0"
+   },
+   {
+    "title": "Confirm registry certificate status",
+    "command": "curl -sS https://registry.furrow.example/v1/devices/fg-042 -H 'Authorization: Bearer furrow-registry-token' | jq -r '.certificate_status'",
+    "output": "replacement_issued",
+    "idempotent": true,
+    "verify_command": "curl -sS https://registry.furrow.example/v1/devices/fg-042 -H 'Authorization: Bearer furrow-registry-token' | jq -r '.certificate_serial_prefix'"
+   }
+  ],
+  "id": "p009"
+ },
+ {
+  "name": "rebill_corrected_water_invoices",
+  "goal": "Re-bill the corrected water-usage invoices for batch invoice-rebill-2025-06 and notify the finance channel after the adjustment is recorded.",
+  "steps": [
+   {
+    "title": "Inspect corrected invoice batch",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT invoice_id, account_id, corrected_gallons, prior_gallons, status FROM water_invoice_adjustments WHERE batch_id = 'invoice-rebill-2025-06' ORDER BY invoice_id;\"",
+    "output": "  invoice_id   | account_id | corrected_gallons | prior_gallons | status\n inv-2025-00417 | acct-farm-12|              18400 |           17600 | pending\n inv-2025-00422 | acct-farm-19|               9200 |            9500 | pending\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT batch_id, invoice_id, corrected_gallons, status FROM water_invoice_adjustments WHERE batch_id = 'invoice-rebill-2025-06' ORDER BY invoice_id;\""
+   },
+   {
+    "title": "Validate source meter readings",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT invoice_id, meter_id, reading_gallons, reading_recorded_at FROM corrected_meter_readings WHERE invoice_id IN ('inv-2025-00417', 'inv-2025-00422') ORDER BY invoice_id, reading_recorded_at DESC;\"",
+    "output": "  invoice_id   | meter_id    | reading_gallons | reading_recorded_at\n inv-2025-00417 | meter-north-7|            18400 | 2025-06-18 09:14:22+00\n inv-2025-00422 | meter-east-3 |             9200 | 2025-06-18 09:15:03+00\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT invoice_id, meter_id, reading_gallons FROM corrected_meter_readings WHERE invoice_id IN ('inv-2025-00417', 'inv-2025-00422') ORDER BY invoice_id;\""
+   },
+   {
+    "title": "Insert invoice adjustment ledger",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"INSERT INTO water_invoice_adjustment_ledger (batch_id, invoice_id, account_id, prior_gallons, corrected_gallons, reason, recorded_by) VALUES ('invoice-rebill-2025-06', 'inv-2025-00417', 'acct-farm-12', 17600, 18400, 'validated corrected meter reading', 'ops-bot'), ('invoice-rebill-2025-06', 'inv-2025-00422', 'acct-farm-19', 9500, 9200, 'validated corrected meter reading', 'ops-bot');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT ledger_id, batch_id, invoice_id, corrected_gallons FROM water_invoice_adjustment_ledger WHERE batch_id = 'invoice-rebill-2025-06' ORDER BY ledger_id;\""
+   },
+   {
+    "title": "Mark invoices rebill-ready",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"UPDATE water_invoice_adjustments SET status = 'rebill_ready', rebill_batch_id = 'invoice-rebill-2025-06', updated_at = now() WHERE batch_id = 'invoice-rebill-2025-06' AND invoice_id IN ('inv-2025-00417', 'inv-2025-00422');\"",
+    "output": "UPDATE 2",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT invoice_id, status, rebill_batch_id FROM water_invoice_adjustments WHERE batch_id = 'invoice-rebill-2025-06' ORDER BY invoice_id;\""
+   },
+   {
+    "title": "Publish billing retry event",
+    "command": "nats pub --jetstream et.billing.rebill --count 1 '{\"batch_id\":\"invoice-rebill-2025-06\",\"invoice_ids\":[\"inv-2025-00417\",\"inv-2025-00422\"],\"reason\":\"corrected water usage\"}'",
+    "output": "Published 1 message to JetStream subject et.billing.rebill",
+    "idempotent": false,
+    "verify_command": "nats stream view BILLING_EVENTS --count 10 --json | jq 'map(select(.subject == \"et.billing.rebill\" and .data.batch_id == \"invoice-rebill-2025-06\")) | length'"
+   },
+   {
+    "title": "Notify finance channel",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" -H 'Content-Type: application/json' https://slack.com/api/chat.postMessage --data '{\"channel\":\"#fw-billing-ops\",\"text\":\"@finance-bot: Re-bill batch invoice-rebill-2025-06 is queued for invoices inv-2025-00417 and inv-2025-00422.\"}'",
+    "output": "{\"ok\":true,\"channel\":\"C08BILLING\",\"ts\":\"1718706120.004100\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" 'https://slack.com/api/conversations.history?channel=C08BILLING&limit=20' | jq -r '.messages[] | select(.text | contains(\"invoice-rebill-2025-06\")) | [.ts,.text] | @tsv'"
+   },
+   {
+    "title": "Mark rebill batch submitted",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"UPDATE invoice_rebill_batches SET status = 'submitted', submitted_at = now() WHERE batch_id = 'invoice-rebill-2025-06';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT batch_id, status, submitted_at FROM invoice_rebill_batches WHERE batch_id = 'invoice-rebill-2025-06';\""
+   },
+   {
+    "title": "Confirm submitted invoice set",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT batch_id, count(*) AS invoice_count, min(status) AS first_status, max(status) AS last_status FROM water_invoice_adjustments WHERE batch_id = 'invoice-rebill-2025-06' GROUP BY batch_id;\"",
+    "output": "     batch_id        | invoice_count | first_status | last_status\n-----------------------+---------------+-------------+------------\n invoice-rebill-2025-06|             2 | rebill_ready | rebill_ready\n(1 row)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT batch_id, status FROM invoice_rebill_batches WHERE batch_id = 'invoice-rebill-2025-06';\""
+   }
+  ],
+  "id": "p010"
+ },
+ {
+  "name": "reenqueue_stuck_et_jobs",
+  "goal": "Re-enqueue the two identified stuck evapotranspiration jobs, record the operator action, and alert the field-operations channel.",
+  "steps": [
+   {
+    "title": "List stuck ET jobs",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, farm_id, field_id, scheduled_at, attempts, status FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\"",
+    "output": "   job_id    | farm_id  | field_id |      scheduled_at       | attempts |  status\n-------------+----------+----------+------------------------+----------+---------\n et-job-8821 | farm-014 | field-07 | 2025-06-18 05:00:00+00|         3 | stuck\n et-job-8827 | farm-021 | field-12 | 2025-06-18 05:00:00+00|         3 | stuck\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, attempts, status FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\""
+   },
+   {
+    "title": "Inspect ET job payloads",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, payload->>'window_start' AS window_start, payload->>'window_end' AS window_end, payload->>'sensor_set_id' AS sensor_set_id FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\"",
+    "output": "   job_id    |   window_start    |     window_end      | sensor_set_id\n-------------+-------------------+--------------------+---------------\n et-job-8821 | 2025-06-17T00:00Z | 2025-06-18T00:00Z | sensor-set-07-2025\n et-job-8827 | 2025-06-17T00:00Z | 2025-06-18T00:00Z | sensor-set-12-2025\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, payload->>'sensor_set_id' AS sensor_set_id FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\""
+   },
+   {
+    "title": "Publish ET reprocess messages",
+    "command": "nats pub --jetstream et.reprocess --count 1 '{\"job_id\":\"et-job-8821\",\"farm_id\":\"farm-014\",\"field_id\":\"field-07\",\"window_start\":\"2025-06-17T00:00Z\",\"window_end\":\"2025-06-18T00:00Z\"}' && nats pub --jetstream et.reprocess --count 1 '{\"job_id\":\"et-job-8827\",\"farm_id\":\"farm-021\",\"field_id\":\"field-12\",\"window_start\":\"2025-06-17T00:00Z\",\"window_end\":\"2025-06-18T00:00Z\"}'",
+    "output": "Published 1 message to JetStream subject et.reprocess\nPublished 1 message to JetStream subject et.reprocess",
+    "idempotent": false,
+    "verify_command": "nats stream view ET_EVENTS --count 20 --json | jq 'map(select(.subject == \"et.reprocess\" and (.data.job_id == \"et-job-8821\" or .data.job_id == \"et-job-8827\"))) | length'"
+   },
+   {
+    "title": "Record reprocess operator action",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"INSERT INTO evapotranspiration_reprocess_log (job_id, action, operator, reason, source_status) VALUES ('et-job-8821', 'enqueue', 'ops-bot', 'stuck after three attempts', 'stuck'), ('et-job-8827', 'enqueue', 'ops-bot', 'stuck after three attempts', 'stuck');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT log_id, job_id, action, reason FROM evapotranspiration_reprocess_log WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY log_id;\""
+   },
+   {
+    "title": "Notify field operations channel",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" -H 'Content-Type: application/json' https://slack.com/api/chat.postMessage --data '{\"channel\":\"#fw-field-ops\",\"text\":\"@field-ops: ET jobs et-job-8821 and et-job-8827 were re-enqueued for the 2025-06-17 processing window.\"}'",
+    "output": "{\"ok\":true,\"channel\":\"C08FIELDOPS\",\"ts\":\"1718706330.006200\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" 'https://slack.com/api/conversations.history?channel=C08FIELDOPS&limit=20' | jq -r '.messages[] | select(.text | contains(\"et-job-8821\") and contains(\"et-job-8827\")) | [.ts,.text] | @tsv'"
+   },
+   {
+    "title": "Mark jobs awaiting workers",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"UPDATE evapotranspiration_jobs SET status = 'requeued', queue_subject = 'et.reprocess', last_requeued_at = now() WHERE job_id IN ('et-job-8821', 'et-job-8827');\"",
+    "output": "UPDATE 2",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, status, queue_subject, last_requeued_at FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\""
+   },
+   {
+    "title": "Check requeue audit entries",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, count(*) AS enqueue_log_count FROM evapotranspiration_reprocess_log WHERE job_id IN ('et-job-8821', 'et-job-8827') AND action = 'enqueue' GROUP BY job_id ORDER BY job_id;\"",
+    "output": "   job_id    | enqueue_log_count\n-------------+-------------------\n et-job-8821 |                 1\n et-job-8827 |                 1\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, count(*) AS enqueue_log_count FROM evapotranspiration_reprocess_log WHERE job_id IN ('et-job-8821', 'et-job-8827') AND action = 'enqueue' GROUP BY job_id ORDER BY job_id;\""
+   },
+   {
+    "title": "Confirm worker handoff state",
+    "command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, status, attempts, queue_subject FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\"",
+    "output": "   job_id    |  status   | attempts | queue_subject\n-------------+-----------+----------+--------------\n et-job-8821 | requeued  |        3 | et.reprocess\n et-job-8827 | requeued  |        3 | et.reprocess\n(2 rows)",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -P pager=off -c \"SELECT job_id, status FROM evapotranspiration_jobs WHERE job_id IN ('et-job-8821', 'et-job-8827') ORDER BY job_id;\""
+   }
+  ],
+  "id": "p011"
+ },
+ {
+  "name": "release_alerts_api_3x_staging",
+  "goal": "Publish and promote the alerts-api 3.4.2 release to the staging cluster, then record and announce the deployment.",
+  "steps": [
+   {
+    "title": "Check staging release status",
+    "command": "kubectl -n staging get deployment alerts-api -o jsonpath='{.spec.template.spec.containers[?(@.name==\"alerts-api\")].image}{\"\\n\"}{.status.readyReplicas}{\"/\"}{.status.replicas}{\"\\n\"}'",
+    "output": "ghcr.io/furrow/alerts-api:3.4.1\\n2/2",
+    "idempotent": true,
+    "verify_command": "kubectl -n staging get deployment alerts-api -o jsonpath='{.status.readyReplicas}/{.status.replicas}{\"\\n\"}'"
+   },
+   {
+    "title": "Confirm release commit exists",
+    "command": "git rev-parse --verify 8f3c1d9^{commit}",
+    "output": "8f3c1d9e1b6a4f0c2d7a9b3e5f8c1d2047a6b9e0",
+    "idempotent": true,
+    "verify_command": "git show -s --format='%H %s' 8f3c1d9"
+   },
+   {
+    "title": "Build and push release image",
+    "command": "docker build --pull -t ghcr.io/furrow/alerts-api:3.4.2 . && docker push ghcr.io/furrow/alerts-api:3.4.2",
+    "output": "3.4.2: digest sha256:91b7d4e0c2a6f83d5a1e7c9b0f4d2a6e8c1b5f73",
+    "idempotent": false,
+    "verify_command": "docker manifest inspect ghcr.io/furrow/alerts-api:3.4.2"
+   },
+   {
+    "title": "Deploy alerts-api image",
+    "command": "kubectl -n staging set image deployment/alerts-api alerts-api=ghcr.io/furrow/alerts-api:3.4.2",
+    "output": "deployment.apps/alerts-api image updated",
+    "idempotent": true,
+    "verify_command": "kubectl -n staging get deployment alerts-api -o jsonpath='{.spec.template.spec.containers[?(@.name==\"alerts-api\")].image}{\"\\n\"}'"
+   },
+   {
+    "title": "Publish deployment event",
+    "command": "printf '%s\\n' '{\"service\":\"alerts-api\",\"environment\":\"staging\",\"version\":\"3.4.2\",\"deployment\":\"alerts-api-staging\"}' | nats pub furrow.deployments.alerts-api",
+    "output": "Published 112 bytes to furrow.deployments.alerts-api",
+    "idempotent": false,
+    "verify_command": "nats stream info FURROW_DEPLOYMENTS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Notify staging release channel",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04FW/alerts/3x42/staging-release -H 'Content-Type: application/json' --data '{\"channel\":\"#fw-alerts-staging\",\"text\":\"alerts-api 3.4.2 is deployed to staging.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04FWALERTS&limit=20' -H 'Authorization: Bearer xoxb-furrow-staging' | jq -r '.messages[] | select(.text | contains(\"alerts-api 3.4.2\")) | .ts' | head -1"
+   },
+   {
+    "title": "Wait for rollout completion",
+    "command": "kubectl -n staging rollout status deployment/alerts-api --timeout=180s",
+    "output": "deployment \"alerts-api\" successfully rolled out",
+    "idempotent": true,
+    "verify_command": "kubectl -n staging get deployment alerts-api -o jsonpath='{.status.observedGeneration}{\" \"}{.status.updatedReplicas}{\"/\"}{.status.replicas}{\"\\n\"}'"
+   },
+   {
+    "title": "Verify staging health endpoint",
+    "command": "curl -fsS https://staging.alerts-api.furrow.example/healthz",
+    "output": "{\"status\":\"ok\",\"version\":\"3.4.2\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://staging.alerts-api.furrow.example/readyz"
+   }
+  ],
+  "id": "p012"
+ },
+ {
+  "name": "decommission_duplicate_registry_devices",
+  "goal": "Retire the confirmed duplicate field devices, create an auditable decommission job for each device, and notify the field-operations team.",
+  "steps": [
+   {
+    "title": "List duplicate device candidates",
+    "command": "curl -fsS 'https://device-registry.furrow.example/v1/devices?farm_id=farm-017&status=active' -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.devices[] | [.device_id,.hardware_serial,.firmware_version] | @tsv'",
+    "output": "dev-017-042\\tSN-88421\\t2.8.1\\ndev-017-043\\tSN-88422\\t2.8.1",
+    "idempotent": true,
+    "verify_command": "curl -fsS 'https://device-registry.furrow.example/v1/devices?farm_id=farm-017&status=active' -H 'Authorization: Bearer furrow-registry-ops' | jq '.devices | length'"
+   },
+   {
+    "title": "Export registry snapshot",
+    "command": "curl -fsS 'https://device-registry.furrow.example/v1/devices?farm_id=farm-017' -H 'Authorization: Bearer furrow-registry-ops' > /var/backups/furrow/farm-017-devices-20250308.json",
+    "output": "saved 18432 bytes to /var/backups/furrow/farm-017-devices-20250308.json",
+    "idempotent": true,
+    "verify_command": "sha256sum /var/backups/furrow/farm-017-devices-20250308.json"
+   },
+   {
+    "title": "Enqueue first decommission job",
+    "command": "curl -fsS -X POST https://device-registry.furrow.example/v1/decommission-jobs -H 'Authorization: Bearer furrow-registry-ops' -H 'Content-Type: application/json' --data '{\"device_id\":\"dev-017-042\",\"replacement_device_id\":\"dev-017-043\",\"reason\":\"duplicate_hardware\",\"requested_by\":\"ops-agent\"}'",
+    "output": "{\"job_id\":\"decom-7c91\",\"state\":\"queued\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS https://device-registry.furrow.example/v1/decommission-jobs/decom-7c91 -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.state'"
+   },
+   {
+    "title": "Enqueue second decommission job",
+    "command": "curl -fsS -X POST https://device-registry.furrow.example/v1/decommission-jobs -H 'Authorization: Bearer furrow-registry-ops' -H 'Content-Type: application/json' --data '{\"device_id\":\"dev-017-043\",\"replacement_device_id\":null,\"reason\":\"duplicate_hardware\",\"requested_by\":\"ops-agent\"}'",
+    "output": "{\"job_id\":\"decom-7c92\",\"state\":\"queued\"}",
+    "idempotent": false,
+    "verify_command": "curl -fsS https://device-registry.furrow.example/v1/decommission-jobs/decom-7c92 -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.state'"
+   },
+   {
+    "title": "Append decommission audit event",
+    "command": "printf '%s\\n' '{\"event\":\"registry.duplicate_decommission_requested\",\"devices\":[\"dev-017-042\",\"dev-017-043\"],\"operator\":\"ops-agent\",\"request_id\":\"farm-017-cleanup-20250308\"}' >> /var/log/furrow/device-registry-audit.jsonl",
+    "output": "appended 1 audit event",
+    "idempotent": false,
+    "verify_command": "tail -n 1 /var/log/furrow/device-registry-audit.jsonl | jq -r '.event + \" \" + .request_id'"
+   },
+   {
+    "title": "Publish registry job alerts",
+    "command": "printf '%s\\n' '{\"subject\":\"farm-017-duplicate-decommission\",\"job_ids\":[\"decom-7c91\",\"decom-7c92\"],\"device_ids\":[\"dev-017-042\",\"dev-017-043\"]}' | nats pub furrow.registry.decommission",
+    "output": "Published 143 bytes to furrow.registry.decommission",
+    "idempotent": false,
+    "verify_command": "nats stream info FURROW_REGISTRY_EVENTS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Wait for registry job completion",
+    "command": "sleep 30 && curl -fsS https://device-registry.furrow.example/v1/decommission-jobs/decom-7c91 -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.state' && curl -fsS https://device-registry.furrow.example/v1/decommission-jobs/decom-7c92 -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.state'",
+    "output": "completed\\ncompleted",
+    "idempotent": true,
+    "verify_command": "curl -fsS 'https://device-registry.furrow.example/v1/devices?farm_id=farm-017&status=retired' -H 'Authorization: Bearer furrow-registry-ops' | jq -r '.devices[] | select(.device_id==\"dev-017-042\" or .device_id==\"dev-017-043\") | [.device_id,.status] | @tsv'"
+   },
+   {
+    "title": "Verify devices no longer active",
+    "command": "curl -fsS 'https://device-registry.furrow.example/v1/devices?farm_id=farm-017&status=active' -H 'Authorization: Bearer furrow-registry-ops' | jq -r '[.devices[] | select(.device_id==\"dev-017-042\" or .device_id==\"dev-017-043\")] | length'",
+    "output": "0",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://device-registry.furrow.example/v1/healthz"
+   }
+  ],
+  "id": "p013"
+ },
+ {
+  "name": "resend_calibration_reports_batch_042",
+  "goal": "Re-send the calibration reports for devices in batch CAL-042 to the agronomy team and record the delivery activity.",
+  "steps": [
+   {
+    "title": "Inspect calibration report records",
+    "command": "psql -d furrow -c \"SELECT report_id, device_id, agronomist_handle, sent_at FROM calibration_reports WHERE batch_id = 'CAL-042' ORDER BY report_id;\"",
+    "output": "6 calibration report rows returned for batch CAL-042.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS report_count FROM calibration_reports WHERE batch_id = 'CAL-042';\""
+   },
+   {
+    "title": "Check agronomist recipient handles",
+    "command": "psql -d furrow -c \"SELECT handle, display_name FROM agronomists WHERE handle IN ('maya.chen', 'jon.bell', 'priya.nair') ORDER BY handle;\"",
+    "output": "3 agronomist recipients found.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS recipient_count FROM agronomists WHERE handle IN ('maya.chen', 'jon.bell', 'priya.nair');\""
+   },
+   {
+    "title": "Enqueue calibration report messages",
+    "command": "for report in $(psql -At -d furrow -c \"SELECT report_id FROM calibration_reports WHERE batch_id = 'CAL-042' ORDER BY report_id;\"); do printf '%s\\n' \"$report\"; done | xargs -I{} nats pub calibration.reports.CAL-042 '{}'",
+    "output": "Published 6 messages to NATS subject calibration.reports.CAL-042.",
+    "idempotent": false,
+    "verify_command": "nats stream info JETSTREAM_CALIBRATION --json | jq '.state.messages'"
+   },
+   {
+    "title": "Record report delivery attempts",
+    "command": "psql -d furrow -c \"INSERT INTO calibration_delivery_log (batch_id, report_id, recipient_handle, action) SELECT 'CAL-042', report_id, agronomist_handle, 'resend' FROM calibration_reports WHERE batch_id = 'CAL-042';\"",
+    "output": "INSERT 0 6",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS resend_rows FROM calibration_delivery_log WHERE batch_id = 'CAL-042' AND action = 'resend';\""
+   },
+   {
+    "title": "Notify agronomy Slack channel",
+    "command": "curl -sS -X POST https://hooks.slack.com/services/T04FURROW/B07CAL042/XgCal042Resend -H 'Content-Type: application/json' --data '{\"channel\":\"#fw-calibration\",\"text\":\"Calibration batch CAL-042 reports were re-sent to @maya.chen, @jon.bell, and @priya.nair.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -sS https://slack.com/api/conversations.history -H 'Authorization: Bearer xoxb-furrow-readonly' --get --data-urlencode 'channel=C04FURROWCAL' --data-urlencode 'limit=20' | jq '[.messages[] | select(.text | contains(\"CAL-042\"))] | length'"
+   },
+   {
+    "title": "Mark resend batch complete",
+    "command": "psql -d furrow -c \"UPDATE calibration_batches SET status = 'resend_complete', completed_at = '2025-02-14T16:30:00Z' WHERE batch_id = 'CAL-042';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT batch_id, status, completed_at FROM calibration_batches WHERE batch_id = 'CAL-042';\""
+   },
+   {
+    "title": "Verify report delivery counts",
+    "command": "psql -d furrow -c \"SELECT report_id, agronomist_handle FROM calibration_reports WHERE batch_id = 'CAL-042' ORDER BY report_id;\"",
+    "output": "6 reports addressed to the expected agronomists.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS missing_reports FROM calibration_reports WHERE batch_id = 'CAL-042' AND report_id IS NULL;\""
+   },
+   {
+    "title": "Read resend audit trail",
+    "command": "psql -d furrow -c \"SELECT event_id, batch_id, report_id, created_at FROM calibration_audit WHERE batch_id = 'CAL-042' ORDER BY event_id DESC LIMIT 20;\"",
+    "output": "Recent CAL-042 delivery audit events returned.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS audit_events FROM calibration_audit WHERE batch_id = 'CAL-042';\""
+   }
+  ],
+  "id": "p014"
+ },
+ {
+  "name": "append_corrected_readings_audit_017",
+  "goal": "Append the corrected sensor readings for audit batch AUD-017 to the immutable ledger and publish one correction event for downstream processing.",
+  "steps": [
+   {
+    "title": "Count staged corrected readings",
+    "command": "psql -d furrow -c \"SELECT count(*) AS staged_count, min(reading_id) AS first_id, max(reading_id) AS last_id FROM corrected_readings_stage WHERE batch_id = 'AUD-017';\"",
+    "output": "staged_count=42, first_id=RD-17001, last_id=RD-17042.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS staged_count FROM corrected_readings_stage WHERE batch_id = 'AUD-017';\""
+   },
+   {
+    "title": "Validate staged device identifiers",
+    "command": "psql -d furrow -c \"SELECT DISTINCT device_id FROM corrected_readings_stage WHERE batch_id = 'AUD-017' ORDER BY device_id;\"",
+    "output": "Validated devices FIELD-118, FIELD-119, and FIELD-207.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(DISTINCT device_id) AS device_count FROM corrected_readings_stage WHERE batch_id = 'AUD-017';\""
+   },
+   {
+    "title": "Append corrected reading rows",
+    "command": "psql -d furrow -c \"INSERT INTO sensor_readings (reading_id, device_id, observed_at, moisture_percent, temperature_celsius, source_batch) SELECT reading_id, device_id, observed_at, moisture_percent, temperature_celsius, 'AUD-017' FROM corrected_readings_stage WHERE batch_id = 'AUD-017' ORDER BY reading_id;\"",
+    "output": "INSERT 0 42",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS inserted_readings FROM sensor_readings WHERE source_batch = 'AUD-017';\""
+   },
+   {
+    "title": "Append immutable audit entries",
+    "command": "psql -d furrow -c \"INSERT INTO reading_audit_ledger (audit_batch, reading_id, device_id, recorded_at, correction_reason) SELECT 'AUD-017', reading_id, device_id, '2025-02-14T16:45:00Z', 'sensor clock drift correction' FROM corrected_readings_stage WHERE batch_id = 'AUD-017' ORDER BY reading_id;\"",
+    "output": "INSERT 0 42",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS ledger_entries FROM reading_audit_ledger WHERE audit_batch = 'AUD-017';\""
+   },
+   {
+    "title": "Publish correction processing event",
+    "command": "nats pub readings.corrected.AUD-017 '{\"batch_id\":\"AUD-017\",\"reading_count\":42,\"reason\":\"sensor clock drift correction\"}'",
+    "output": "Published 1 message to readings.corrected.AUD-017.",
+    "idempotent": false,
+    "verify_command": "nats stream info JETSTREAM_READINGS --json | jq '.state.messages'"
+   },
+   {
+    "title": "Mark correction batch finalized",
+    "command": "psql -d furrow -c \"UPDATE correction_batches SET status = 'finalized', finalized_at = '2025-02-14T16:46:00Z' WHERE batch_id = 'AUD-017';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT batch_id, status, finalized_at FROM correction_batches WHERE batch_id = 'AUD-017';\""
+   },
+   {
+    "title": "Compare ledger and reading counts",
+    "command": "psql -d furrow -c \"SELECT (SELECT count(*) FROM sensor_readings WHERE source_batch = 'AUD-017') AS reading_count, (SELECT count(*) FROM reading_audit_ledger WHERE audit_batch = 'AUD-017') AS ledger_count;\"",
+    "output": "reading_count=42, ledger_count=42.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS mismatched_rows FROM sensor_readings r JOIN reading_audit_ledger a ON a.reading_id = r.reading_id WHERE a.audit_batch = 'AUD-017' AND r.source_batch <> 'AUD-017';\""
+   },
+   {
+    "title": "Read latest correction ledger event",
+    "command": "psql -d furrow -c \"SELECT ledger_id, audit_batch, reading_id, recorded_at FROM reading_audit_ledger WHERE audit_batch = 'AUD-017' ORDER BY ledger_id DESC LIMIT 1;\"",
+    "output": "ledger_id=88417, audit_batch=AUD-017, reading_id=RD-17042.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) AS empty_reasons FROM reading_audit_ledger WHERE audit_batch = 'AUD-017' AND correction_reason IS NULL;\""
+   }
+  ],
+  "id": "p015"
+ },
+ {
+  "name": "roll_sensor_ingest_to_v2",
+  "goal": "Create a versioned NATS stream, replay sensor events into the v2 schema, and cut over the sensor-ingest consumers.",
+  "steps": [
+   {
+    "title": "Inspect current stream state",
+    "command": "nats stream info SENSOR_INGEST --server nats://nats-furrow.svc.internal:4222",
+    "output": "SENSOR_INGEST: 18 subjects, 42,817,554 messages, 1.8 GiB stored",
+    "idempotent": true,
+    "verify_command": "nats stream info SENSOR_INGEST --server nats://nats-furrow.svc.internal:4222"
+   },
+   {
+    "title": "Confirm v2 subject mapping",
+    "command": "grep -n 'sensor.measurements.v2' /opt/furrow/services/sensor-ingest/schema-map.yaml",
+    "output": "sensor.measurements.v2: subject=sensor.measurements.v2, version=2",
+    "idempotent": true,
+    "verify_command": "grep -n 'sensor.measurements.v2' /opt/furrow/services/sensor-ingest/schema-map.yaml"
+   },
+   {
+    "title": "Create v2 migration stream",
+    "command": "nats stream add SENSOR_INGEST_V2 --subjects 'sensor.measurements.v2,device.heartbeat.v2' --storage file --retention limits --max-msgs 100000000 --max-age 720h --replicas 3 --server nats://nats-furrow.svc.internal:4222",
+    "output": "Stream SENSOR_INGEST_V2 created with 3 replicas",
+    "idempotent": false,
+    "verify_command": "nats stream info SENSOR_INGEST_V2 --server nats://nats-furrow.svc.internal:4222"
+   },
+   {
+    "title": "Replay retained sensor events",
+    "command": "nats pub replay --count 25000 --subject sensor.measurements.v2 --source 'sensor.measurements.> --count 25000' --server nats://nats-furrow.svc.internal:4222",
+    "output": "Published 25,000 transformed sensor events to sensor.measurements.v2",
+    "idempotent": false,
+    "verify_command": "nats stream info SENSOR_INGEST_V2 --server nats://nats-furrow.svc.internal:4222 | grep -E 'Messages|Stored Bytes'"
+   },
+   {
+    "title": "Publish migration audit event",
+    "command": "printf '%s\\n' '{\"event\":\"schema_rollout\",\"from\":\"v1\",\"to\":\"v2\",\"stream\":\"SENSOR_INGEST_V2\",\"replayed\":25000}' | nats pub sensor.schema.audit --server nats://nats-furrow.svc.internal:4222",
+    "output": "Published schema_rollout audit event to sensor.schema.audit",
+    "idempotent": false,
+    "verify_command": "nats stream info SENSOR_SCHEMA_AUDIT --server nats://nats-furrow.svc.internal:4222 | grep -E 'Messages|Stored Bytes'"
+   },
+   {
+    "title": "Point consumers at v2",
+    "command": "nats consumer update SENSOR_INGEST_V2 water_scheduler_v2 --filter 'sensor.measurements.v2.>' --deliver all --ack explicit --server nats://nats-furrow.svc.internal:4222",
+    "output": "Consumer water_scheduler_v2 updated with filter sensor.measurements.v2.>",
+    "idempotent": true,
+    "verify_command": "nats consumer info SENSOR_INGEST_V2 water_scheduler_v2 --server nats://nats-furrow.svc.internal:4222"
+   },
+   {
+    "title": "Send cutover announcement",
+    "command": "printf '%s\\n' '{\"event\":\"stream_cutover\",\"stream\":\"SENSOR_INGEST_V2\",\"schema\":\"v2\",\"environment\":\"production\"}' | nats pub furrow.release.events --server nats://nats-furrow.svc.internal:4222",
+    "output": "Published stream_cutover announcement to furrow.release.events",
+    "idempotent": false,
+    "verify_command": "nats stream info FURROW_RELEASE_EVENTS --server nats://nats-furrow.svc.internal:4222 | grep -E 'Messages|Stored Bytes'"
+   },
+   {
+    "title": "Verify v2 consumer delivery",
+    "command": "nats consumer info SENSOR_INGEST_V2 water_scheduler_v2 --server nats://nats-furrow.svc.internal:4222 | grep -E 'Num Pending|Num Ack Pending|Delivered|Last Delivered'",
+    "output": "Delivered=1842, Num Pending=0, Num Ack Pending=0",
+    "idempotent": true,
+    "verify_command": "nats consumer info SENSOR_INGEST_V2 water_scheduler_v2 --server nats://nats-furrow.svc.internal:4222"
+   }
+  ],
+  "id": "p016"
+ },
+ {
+  "name": "email_monthly_water_reports",
+  "goal": "Generate the June 2025 water-use report for each subscribed farm and email the resulting PDF to its report recipients.",
+  "steps": [
+   {
+    "title": "Check June report inputs",
+    "command": "psql -d furrow -c \"SELECT farm_id, COUNT(*) AS readings, SUM(water_liters) AS total_liters FROM sensor_water_usage WHERE month = DATE '2025-06-01' GROUP BY farm_id ORDER BY farm_id;\"",
+    "output": "farm_id | readings | total_liters\n---------+----------+-------------\nfarm-014 | 28,431 | 18420050",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT COUNT(*) FROM sensor_water_usage WHERE month = DATE '2025-06-01';\""
+   },
+   {
+    "title": "Verify report recipient list",
+    "command": "psql -d furrow -c \"SELECT farm_id, string_agg(email, ',' ORDER BY email) FROM monthly_report_recipients WHERE report_month = DATE '2025-06-01' AND active = true GROUP BY farm_id ORDER BY farm_id;\"",
+    "output": "farm-014 | ops@greenacrefarm.example, owner@greenacrefarm.example",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT COUNT(*) FROM monthly_report_recipients WHERE report_month = DATE '2025-06-01' AND active = true;\""
+   },
+   {
+    "title": "Create monthly report record",
+    "command": "psql -d furrow -c \"INSERT INTO monthly_water_reports (farm_id, report_month, object_path, status) VALUES ('farm-014', DATE '2025-06-01', 's3://furrow-reports/2025/06/farm-014-water-report.pdf', 'queued');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -c \"SELECT id, status FROM monthly_water_reports WHERE farm_id = 'farm-014' AND report_month = DATE '2025-06-01' ORDER BY id DESC LIMIT 1;\""
+   },
+   {
+    "title": "Render report PDF",
+    "command": "python3 /opt/furrow/jobs/render_water_report.py --farm farm-014 --month 2025-06 --output /var/lib/furrow/reports/farm-014-2025-06.pdf",
+    "output": "Rendered /var/lib/furrow/reports/farm-014-2025-06.pdf (2.4 MiB)",
+    "idempotent": false,
+    "verify_command": "stat -c '%n %s bytes' /var/lib/furrow/reports/farm-014-2025-06.pdf"
+   },
+   {
+    "title": "Upload report to storage",
+    "command": "gsutil cp /var/lib/furrow/reports/farm-014-2025-06.pdf gs://furrow-reports/2025/06/farm-014-water-report.pdf",
+    "output": "Copied farm-014-2025-06.pdf to gs://furrow-reports/2025/06/farm-014-water-report.pdf",
+    "idempotent": false,
+    "verify_command": "gsutil stat gs://furrow-reports/2025/06/farm-014-water-report.pdf"
+   },
+   {
+    "title": "Mark report ready",
+    "command": "psql -d furrow -c \"UPDATE monthly_water_reports SET status = 'ready', object_path = 's3://furrow-reports/2025/06/farm-014-water-report.pdf' WHERE farm_id = 'farm-014' AND report_month = DATE '2025-06-01';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT status FROM monthly_water_reports WHERE farm_id = 'farm-014' AND report_month = DATE '2025-06-01';\""
+   },
+   {
+    "title": "Email report to farm",
+    "command": "curl --fail-with-body -X POST https://api.postmark.example/email --header 'X-Postmark-Server-Token: furrow-prod-8f2c1a' --header 'Content-Type: application/json' --data '{\"From\":\"reports@furrow.example\",\"To\":\"ops@greenacrefarm.example, owner@greenacrefarm.example\",\"Subject\":\"June 2025 water-use report \u2014 Green Acre Farm\",\"TextBody\":\"Your June 2025 water-use report is attached.\",\"Attachments\":[{\"Name\":\"farm-014-2025-06.pdf\",\"Content\":\"JVBERi0xLjQKJcTl8uXrp/Og0MTGCg==\",\"ContentType\":\"application/pdf\"}]}'",
+    "output": "HTTP/1.1 200 OK; MessageID: 8d4b5f20-1f31-4e9d-a6a4-1b2c5e7f9011",
+    "idempotent": false,
+    "verify_command": "curl --fail --silent https://api.postmark.example/messages/8d4b5f20-1f31-4e9d-a6a4-1b2c5e7f9011 -H 'X-Postmark-Server-Token: furrow-prod-8f2c1a'"
+   },
+   {
+    "title": "Record report delivery",
+    "command": "psql -d furrow -c \"UPDATE monthly_water_reports SET status = 'sent', sent_at = now() WHERE farm_id = 'farm-014' AND report_month = DATE '2025-06-01';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT status, sent_at FROM monthly_water_reports WHERE farm_id = 'farm-014' AND report_month = DATE '2025-06-01';\""
+   }
+  ],
+  "id": "p017"
+ },
+ {
+  "name": "create_field_work_orders",
+  "goal": "Create work orders for the irrigation sensor backlog and notify the responsible field technicians.",
+  "steps": [
+   {
+    "title": "Inspect Backlog Queue",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT backlog_id, field_id, issue, priority FROM field_backlog WHERE status = 'open' ORDER BY priority DESC, created_at LIMIT 25;\"",
+    "output": "25 backlog items ready for assignment.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS open_items FROM field_backlog WHERE status = 'open';\""
+   },
+   {
+    "title": "Create Work Order Record",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO technician_work_orders (work_order_id, backlog_id, field_id, technician_handle, task, priority, status) VALUES (gen_random_uuid(), 'BL-10482', 'field-7north', '@maria.chen', 'Replace soil moisture sensor S-7N-014 and recalibrate gateway', 'urgent', 'open') RETURNING work_order_id;\"",
+    "output": "Work order 8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91 created.",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT work_order_id, status FROM technician_work_orders WHERE backlog_id = 'BL-10482' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Verify Work Order Assignment",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT work_order_id, technician_handle, priority FROM technician_work_orders WHERE backlog_id = 'BL-10482' ORDER BY created_at DESC LIMIT 1;\"",
+    "output": "Work order assigned to @maria.chen with urgent priority.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT technician_handle FROM technician_work_orders WHERE backlog_id = 'BL-10482' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Publish Technician Notification",
+    "command": "nats pub jetstream field-work-orders '{\"work_order_id\":\"8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91\",\"technician\":\"@maria.chen\",\"field\":\"7north\",\"task\":\"Replace soil moisture sensor S-7N-014\"}'",
+    "output": "Published field-work-orders message with JetStream acknowledgement.",
+    "idempotent": false,
+    "verify_command": "nats stream view field-work-orders --count 10 --since 1h"
+   },
+   {
+    "title": "Set Work Order Priority",
+    "command": "psql \"$DATABASE_URL\" -c \"UPDATE technician_work_orders SET priority = 'urgent', updated_at = now() WHERE work_order_id = '8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT priority FROM technician_work_orders WHERE work_order_id = '8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91';\""
+   },
+   {
+    "title": "Append Assignment Audit Event",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO work_order_audit_events (event_id, work_order_id, actor, event_type) VALUES (gen_random_uuid(), '8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91', 'ops-agent', 'assigned_to_maria_chen');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT event_type, actor, created_at FROM work_order_audit_events WHERE work_order_id = '8e41c2d9-6c3a-4f4a-9b4b-2d3c1f0a7e91' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Check Open Work Orders",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT status, count(*) FROM technician_work_orders WHERE field_id = 'field-7north' GROUP BY status ORDER BY status;\"",
+    "output": "open: 6, in_progress: 2, completed: 11",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) FROM technician_work_orders WHERE field_id = 'field-7north' AND status = 'open';\""
+   },
+   {
+    "title": "Confirm Backlog Assignment",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT backlog_id, status FROM field_backlog WHERE backlog_id = 'BL-10482';\"",
+    "output": "BL-10482 is open and assigned.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT backlog_id, status FROM field_backlog WHERE backlog_id = 'BL-10482';\""
+   }
+  ],
+  "id": "p018"
+ },
+ {
+  "name": "refund_duplicate_subscription_charges",
+  "goal": "Refund the confirmed duplicate subscription charge for farm_redwood_01 and reconcile the payment and support records.",
+  "steps": [
+   {
+    "title": "Confirm duplicate charge",
+    "command": "curl -sS https://billing.furrow.example/v1/charges/chr_8Q2M4N7P -H 'Authorization: Bearer furrow-ops-token' | jq '{charge_id, customer_id, amount_cents, status, invoice_id}'",
+    "output": "{\"charge_id\":\"chr_8Q2M4N7P\",\"customer_id\":\"cus_redwood01\",\"amount_cents\":12900,\"status\":\"succeeded\",\"invoice_id\":\"in_202503_1048\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://billing.furrow.example/v1/charges/chr_8Q2M4N7P -H 'Authorization: Bearer furrow-ops-token' | jq '{charge_id, status, amount_cents}'"
+   },
+   {
+    "title": "Review matching payment",
+    "command": "curl -sS -G https://billing.furrow.example/v1/charges --data-urlencode 'customer_id=cus_redwood01' --data-urlencode 'invoice_id=in_202503_1048' -H 'Authorization: Bearer furrow-ops-token' | jq '[.data[] | {charge_id, amount_cents, created_at, description}]'",
+    "output": "[{\"charge_id\":\"chr_8Q2M4N7P\",\"amount_cents\":12900,\"created_at\":\"2025-03-17T14:02:11Z\",\"description\":\"Furrow Pro subscription\"},{\"charge_id\":\"chr_8Q2M4N7Q\",\"amount_cents\":12900,\"created_at\":\"2025-03-17T14:02:44Z\",\"description\":\"Furrow Pro subscription\"}]",
+    "idempotent": true,
+    "verify_command": "curl -sS -G https://billing.furrow.example/v1/charges --data-urlencode 'customer_id=cus_redwood01' --data-urlencode 'invoice_id=in_202503_1048' -H 'Authorization: Bearer furrow-ops-token' | jq '.data | length'"
+   },
+   {
+    "title": "Issue duplicate-charge refund",
+    "command": "curl -sS -X POST https://billing.furrow.example/v1/refunds -H 'Authorization: Bearer furrow-ops-token' -H 'Content-Type: application/json' -d '{\"refund_id\":\"ref_20250318_0917\",\"charge_id\":\"chr_8Q2M4N7Q\",\"amount_cents\":12900,\"reason\":\"duplicate_subscription_charge\",\"operator\":\"@maria.chen\"}' | jq '{refund_id, charge_id, amount_cents, status}'",
+    "output": "{\"refund_id\":\"ref_20250318_0917\",\"charge_id\":\"chr_8Q2M4N7Q\",\"amount_cents\":12900,\"status\":\"succeeded\"}",
+    "idempotent": false,
+    "verify_command": "curl -sS https://billing.furrow.example/v1/refunds/ref_20250318_0917 -H 'Authorization: Bearer furrow-ops-token' | jq '{refund_id, charge_id, amount_cents, status}'"
+   },
+   {
+    "title": "Append refund ledger entry",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO billing_ledger_entries (entry_id, customer_id, charge_id, refund_id, entry_type, amount_cents, created_by) VALUES ('ble_redwood_20250318_0917', 'cus_redwood01', 'chr_8Q2M4N7Q', 'ref_20250318_0917', 'subscription_refund', 12900, 'maria.chen');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM billing_ledger_entries WHERE entry_id = 'ble_redwood_20250318_0917';\""
+   },
+   {
+    "title": "Send billing notification",
+    "command": "curl -sS -X POST https://hooks.slack.com/services/T04FURROW/B08BILLING/BILL202503180917 -H 'Content-Type: application/json' -d '{\"channel\":\"#fw-billing\",\"text\":\"Refund ref_20250318_0917 issued for duplicate subscription charge chr_8Q2M4N7Q; customer notified by billing workflow.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://slack.com/api/conversations.history?channel=C08BILLING&limit=20' -H 'Authorization: Bearer xoxb-furrow-billing' | jq '[.messages[] | select(.text | contains(\"ref_20250318_0917\"))] | length'"
+   },
+   {
+    "title": "Set case resolution state",
+    "command": "curl -sS -X PUT https://support.furrow.example/v1/cases/case_7318 -H 'Authorization: Bearer furrow-ops-token' -H 'Content-Type: application/json' -d '{\"status\":\"resolved\",\"resolution\":\"duplicate subscription charge refunded\",\"refund_id\":\"ref_20250318_0917\"}' | jq '{case_id, status, resolution}'",
+    "output": "{\"case_id\":\"case_7318\",\"status\":\"resolved\",\"resolution\":\"duplicate subscription charge refunded\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://support.furrow.example/v1/cases/case_7318 -H 'Authorization: Bearer furrow-ops-token' | jq '{case_id, status, resolution}'"
+   },
+   {
+    "title": "Check refund settlement",
+    "command": "curl -sS https://billing.furrow.example/v1/refunds/ref_20250318_0917 -H 'Authorization: Bearer furrow-ops-token' | jq '{refund_id, status, processor_reference, settled_at}'",
+    "output": "{\"refund_id\":\"ref_20250318_0917\",\"status\":\"succeeded\",\"processor_reference\":\"pi_3QW8FURROW91\",\"settled_at\":\"2025-03-18T09:18:12Z\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://billing.furrow.example/v1/refunds/ref_20250318_0917 -H 'Authorization: Bearer furrow-ops-token' | jq '{status, settled_at}'"
+   },
+   {
+    "title": "Reconcile customer balance",
+    "command": "curl -sS https://billing.furrow.example/v1/customers/cus_redwood01/balance -H 'Authorization: Bearer furrow-ops-token' | jq '{customer_id, balance_cents, last_refund_id}'",
+    "output": "{\"customer_id\":\"cus_redwood01\",\"balance_cents\":0,\"last_refund_id\":\"ref_20250318_0917\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://billing.furrow.example/v1/customers/cus_redwood01/balance -H 'Authorization: Bearer furrow-ops-token' | jq '{customer_id, balance_cents, last_refund_id}'"
+   }
+  ],
+  "id": "p019"
+ },
+ {
+  "name": "onboard_farm_cooperative",
+  "goal": "Onboard Green Valley Cooperative with its farm, users, devices, MQTT access, and dashboard configuration.",
+  "steps": [
+   {
+    "title": "Check Cooperative Registry",
+    "command": "curl -sS https://api.furrow.example/v1/cooperatives/green-valley",
+    "output": "404 cooperative not found",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/cooperatives/green-valley"
+   },
+   {
+    "title": "Validate Farm Coordinates",
+    "command": "curl -sS https://api.furrow.example/v1/geocode?farm_id=farm-green-valley-01",
+    "output": "farm-green-valley-01: 38.5729,-121.4921; elevation 18m",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/farms/farm-green-valley-01"
+   },
+   {
+    "title": "Create Cooperative Record",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/cooperatives -H 'Content-Type: application/json' -d '{\"id\":\"coop-green-valley\",\"name\":\"Green Valley Cooperative\",\"region\":\"Sacramento County\",\"tier\":\"grower\"}'",
+    "output": "201 Created cooperative coop-green-valley",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/cooperatives/coop-green-valley"
+   },
+   {
+    "title": "Create Farm Membership",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/cooperatives/coop-green-valley/memberships -H 'Content-Type: application/json' -d '{\"user_id\":\"usr-maya-ortiz\",\"role\":\"owner\"}'",
+    "output": "201 Created membership coop-green-valley/usr-maya-ortiz",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/cooperatives/coop-green-valley/memberships/usr-maya-ortiz"
+   },
+   {
+    "title": "Provision MQTT Device ACL",
+    "command": "curl -sS -X POST https://registry.furrow.example/v1/mqtt/acls -H 'Content-Type: application/json' -d '{\"acl_id\":\"acl-coop-green-valley-01\",\"cooperative_id\":\"coop-green-valley\",\"topic_prefix\":\"farms/farm-green-valley-01/\",\"permission\":\"rw\"}'",
+    "output": "201 Created ACL acl-coop-green-valley-01",
+    "idempotent": false,
+    "verify_command": "curl -sS https://registry.furrow.example/v1/mqtt/acls/acl-coop-green-valley-01"
+   },
+   {
+    "title": "Register Gateway Device",
+    "command": "curl -sS -X POST https://registry.furrow.example/v1/devices -H 'Content-Type: application/json' -d '{\"device_id\":\"dev-gv-gateway-01\",\"cooperative_id\":\"coop-green-valley\",\"firmware\":\"2025.03.14\",\"transport\":\"mqtt\"}'",
+    "output": "201 Created device dev-gv-gateway-01",
+    "idempotent": false,
+    "verify_command": "curl -sS https://registry.furrow.example/v1/devices/dev-gv-gateway-01"
+   },
+   {
+    "title": "Bind Device Credentials",
+    "command": "curl -sS -X POST https://registry.furrow.example/v1/devices/dev-gv-gateway-01/credentials -H 'Content-Type: application/json' -d '{\"client_id\":\"gv-gateway-01\",\"username\":\"furrow_gv_gateway_01\",\"ttl_days\":365}'",
+    "output": "201 Created MQTT credentials for dev-gv-gateway-01",
+    "idempotent": false,
+    "verify_command": "curl -sS https://registry.furrow.example/v1/devices/dev-gv-gateway-01/credentials"
+   },
+   {
+    "title": "Verify Onboarding Status",
+    "command": "curl -sS https://api.furrow.example/v1/cooperatives/coop-green-valley/onboarding-status",
+    "output": "coop-green-valley: farm and gateway ready; dashboard pending",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/cooperatives/coop-green-valley/onboarding-status"
+   }
+  ],
+  "id": "p020"
+ },
+ {
+  "name": "notify_schedule_change",
+  "goal": "Publish and notify affected users and field devices about irrigation schedule change sch-green-valley-041.",
+  "steps": [
+   {
+    "title": "Read Current Irrigation Schedule",
+    "command": "curl -sS https://api.furrow.example/v1/schedules/sch-green-valley-041",
+    "output": "schedule sch-green-valley-041: zone z-17, start 06:00, duration 45m",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/schedules/sch-green-valley-041"
+   },
+   {
+    "title": "Resolve Notification Audience",
+    "command": "curl -sS 'https://api.furrow.example/v1/schedules/sch-green-valley-041/audience'",
+    "output": "8 recipients; 3 device subscriptions; channels push, sms, slack",
+    "idempotent": true,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/schedules/sch-green-valley-041/audience'"
+   },
+   {
+    "title": "Publish Schedule Change Event",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/events -H 'Content-Type: application/json' -d '{\"event_type\":\"irrigation.schedule.changed\",\"schedule_id\":\"sch-green-valley-041\",\"start\":\"2025-04-18T07:15:00Z\",\"duration_minutes\":55,\"reason\":\"water_pressure_recovery\"}'",
+    "output": "202 Accepted event evt-8f42c1",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/events/evt-8f42c1"
+   },
+   {
+    "title": "Enqueue Push Delivery Job",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/notification-jobs -H 'Content-Type: application/json' -d '{\"job_id\":\"push-sch-green-valley-041-r3\",\"schedule_id\":\"sch-green-valley-041\",\"channel\":\"push\",\"template\":\"schedule_change_v4\",\"audience\":\"resolved\"}'",
+    "output": "202 Accepted push job push-sch-green-valley-041-r3",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/notification-jobs/push-sch-green-valley-041-r3"
+   },
+   {
+    "title": "Enqueue SMS Delivery Job",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/notification-jobs -H 'Content-Type: application/json' -d '{\"job_id\":\"sms-sch-green-valley-041-r3\",\"schedule_id\":\"sch-green-valley-041\",\"channel\":\"sms\",\"template\":\"schedule_change_sms_v2\",\"audience\":\"managers\"}'",
+    "output": "202 Accepted SMS job sms-sch-green-valley-041-r3",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/notification-jobs/sms-sch-green-valley-041-r3"
+   },
+   {
+    "title": "Send Slack Operations Notice",
+    "command": "curl -sS -X POST https://hooks.slack.com/services/T04FW/green-valley/schedule-change-r3 -H 'Content-Type: application/json' -d '{\"text\":\"@maya-ortiz: Zone 17 now starts at 07:15 UTC and runs for 55 minutes on 18 Apr 2025.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://slack.com/api/conversations.history?channel=T04FW&limit=20'"
+   },
+   {
+    "title": "Push Device Command",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/devices/dev-gv-valve-17/commands -H 'Content-Type: application/json' -d '{\"command_id\":\"cmd-sch-green-valley-041-r3\",\"type\":\"schedule.reload\",\"schedule_id\":\"sch-green-valley-041\"}'",
+    "output": "202 Accepted command cmd-sch-green-valley-041-r3",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/devices/dev-gv-valve-17/commands/cmd-sch-green-valley-041-r3"
+   },
+   {
+    "title": "Verify Notification Delivery",
+    "command": "curl -sS https://api.furrow.example/v1/schedules/sch-green-valley-041/notifications/status",
+    "output": "push queued; sms queued; Slack delivered; device command pending",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/schedules/sch-green-valley-041/notifications/status"
+   }
+  ],
+  "id": "p021"
+ },
+ {
+  "name": "drought_zone_oneoff_irrigation",
+  "goal": "Trigger and verify a one-off irrigation run for the two drought zones served by irrigation-scheduler.",
+  "steps": [
+   {
+    "title": "Check drought zone status",
+    "command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT zone_id, zone_name, moisture_pct, irrigation_state FROM drought_zones WHERE zone_id IN ('dz-north-04','dz-east-09') ORDER BY zone_id;\"",
+    "output": "dz-east-09 | East Orchard | 18 | idle\n dz-north-04 | North Field | 21 | idle",
+    "idempotent": true,
+    "verify_command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT zone_id, moisture_pct, irrigation_state FROM drought_zones WHERE zone_id IN ('dz-north-04','dz-east-09') ORDER BY zone_id;\""
+   },
+   {
+    "title": "Confirm scheduler readiness",
+    "command": "curl -fsS http://irrigation-scheduler.internal.furrow/healthz && curl -fsS http://device-registry.internal.furrow/v1/gateways?zone_id=dz-north-04",
+    "output": "{\"status\":\"ok\"} {\"gateways\":[{\"gateway_id\":\"gw-north-17\",\"online\":true}]}",
+    "idempotent": true,
+    "verify_command": "curl -fsS http://device-registry.internal.furrow/v1/gateways?zone_id=dz-north-04"
+   },
+   {
+    "title": "Create irrigation run record",
+    "command": "psql \"$FURROW_DATABASE_URL\" -c \"INSERT INTO irrigation_runs (run_id, initiated_by, zone_ids, reason, requested_minutes) VALUES (gen_random_uuid(), 'ops-oncall', ARRAY['dz-north-04','dz-east-09'], 'drought_response', 18);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT run_id, zone_ids, requested_minutes, created_at FROM irrigation_runs WHERE initiated_by='ops-oncall' AND reason='drought_response' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Enqueue scheduler command",
+    "command": "nats pub irrigation.scheduler.commands '{\"command\":\"run_once\",\"run_id\":\"RUN-2025-06-18-0042\",\"zones\":[\"dz-north-04\",\"dz-east-09\"],\"minutes\":18,\"reason\":\"drought_response\"}'",
+    "output": "Published 83 bytes to irrigation.scheduler.commands",
+    "idempotent": false,
+    "verify_command": "nats stream report scheduler-command-audit --json"
+   },
+   {
+    "title": "Open north valve",
+    "command": "mosquitto_pub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/valves/dz-north-04/command' -m '{\"action\":\"open\",\"run_id\":\"RUN-2025-06-18-0042\",\"duration_minutes\":18}' -q 1",
+    "output": "Client furrow-ops-17 sending CONNECT\nClient furrow-ops-17 received CONNACK\nPublished valve command",
+    "idempotent": false,
+    "verify_command": "mosquitto_sub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/valves/dz-north-04/state' -C 1 -W 5"
+   },
+   {
+    "title": "Open east valve",
+    "command": "mosquitto_pub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/valves/dz-east-09/command' -m '{\"action\":\"open\",\"run_id\":\"RUN-2025-06-18-0042\",\"duration_minutes\":18}' -q 1",
+    "output": "Client furrow-ops-17 sending CONNECT\nClient furrow-ops-17 received CONNACK\nPublished valve command",
+    "idempotent": false,
+    "verify_command": "mosquitto_sub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/valves/dz-east-09/state' -C 1 -W 5"
+   },
+   {
+    "title": "Notify irrigation response",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04FURROW/B07OPS/irrigation -H 'Content-Type: application/json' --data '{\"channel\":\"#fw-ops\",\"text\":\"One-off drought irrigation started for dz-north-04 and dz-east-09: 18 minutes, run RUN-2025-06-18-0042.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04FURROW&limit=20' -H \"Authorization: Bearer $SLACK_TOKEN\""
+   },
+   {
+    "title": "Check run completion",
+    "command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT run_id, zone_ids, status, started_at, completed_at FROM irrigation_runs WHERE run_id='RUN-2025-06-18-0042';\"",
+    "output": "RUN-2025-06-18-0042 | {dz-north-04,dz-east-09} | running | 2025-06-18 14:32:07+00 | NULL",
+    "idempotent": true,
+    "verify_command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT run_id, status, started_at, completed_at FROM irrigation_runs WHERE run_id='RUN-2025-06-18-0042';\""
+   }
+  ],
+  "id": "p022"
+ },
+ {
+  "name": "gateway_cohort_firmware_publish",
+  "goal": "Publish firmware version 2.8.0 to gateway cohort gw-west-03 and verify the rollout event and assignment.",
+  "steps": [
+   {
+    "title": "Check cohort membership",
+    "command": "curl -fsS 'http://device-registry.internal.furrow/v1/gateway-cohorts/gw-west-03' -H \"Authorization: Bearer $DEVICE_REGISTRY_TOKEN\"",
+    "output": "{\"cohort_id\":\"gw-west-03\",\"members\":[\"gw-301\",\"gw-302\",\"gw-303\"],\"current_firmware\":\"2.7.6\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS 'http://device-registry.internal.furrow/v1/gateway-cohorts/gw-west-03' -H \"Authorization: Bearer $DEVICE_REGISTRY_TOKEN\""
+   },
+   {
+    "title": "Verify firmware artifact",
+    "command": "gcloud storage ls -l gs://furrow-firmware/releases/2.8.0/gateway-2.8.0.bin",
+    "output": "gs://furrow-firmware/releases/2.8.0/gateway-2.8.0.bin  73400320  2025-06-18 13:48:11 UTC",
+    "idempotent": true,
+    "verify_command": "gcloud storage hash gs://furrow-firmware/releases/2.8.0/gateway-2.8.0.bin --format='value(md5Hash)'"
+   },
+   {
+    "title": "Create immutable firmware object",
+    "command": "gcloud storage cp gs://furrow-firmware/releases/2.8.0/gateway-2.8.0.bin \"gs://furrow-firmware/published/$(date +%s)-gateway-2.8.0.bin\"",
+    "output": "Copying gs://furrow-firmware/releases/2.8.0/gateway-2.8.0.bin to gs://furrow-firmware/published/1750257131-gateway-2.8.0.bin ... done.",
+    "idempotent": false,
+    "verify_command": "gcloud storage ls -l gs://furrow-firmware/published/ | grep 'gateway-2.8.0.bin' | tail -n 1"
+   },
+   {
+    "title": "Register cohort release",
+    "command": "psql \"$FURROW_DATABASE_URL\" -c \"INSERT INTO firmware_releases (release_id, cohort_id, version, artifact_uri, published_by) VALUES (gen_random_uuid(), 'gw-west-03', '2.8.0', 'gs://furrow-firmware/published/1750257131-gateway-2.8.0.bin', 'ops-release-bot');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$FURROW_DATABASE_URL\" -c \"SELECT release_id, cohort_id, version, published_at FROM firmware_releases WHERE version='2.8.0' AND published_by='ops-release-bot' ORDER BY published_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Publish MQTT rollout command",
+    "command": "mosquitto_pub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/gateway-cohorts/gw-west-03/firmware' -m '{\"release_id\":\"rel-2025-06-18-2.8.0\",\"version\":\"2.8.0\",\"artifact\":\"gs://furrow-firmware/published/1750257131-gateway-2.8.0.bin\",\"action\":\"install_and_restart\"}' -q 1",
+    "output": "Client furrow-release-04 sending CONNECT\nClient furrow-release-04 received CONNACK\nPublished firmware rollout command",
+    "idempotent": false,
+    "verify_command": "mosquitto_sub -h mqtt.furrow.internal -p 8883 --cafile /etc/furrow/ca.pem -u \"$DEVICE_USER\" -P \"$DEVICE_PASSWORD\" -t 'furrow/gateway-cohorts/gw-west-03/firmware/status' -C 1 -W 5"
+   },
+   {
+    "title": "Enqueue device update jobs",
+    "command": "nats pub firmware.rollout.jobs '{\"release_id\":\"rel-2025-06-18-2.8.0\",\"cohort_id\":\"gw-west-03\",\"gateways\":[\"gw-301\",\"gw-302\",\"gw-303\"],\"retry_policy\":\"none\"}'",
+    "output": "Published 153 bytes to firmware.rollout.jobs",
+    "idempotent": false,
+    "verify_command": "nats stream report firmware-rollout-jobs --json"
+   },
+   {
+    "title": "Post release notification",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04FURROW/B07OPS/firmware -H 'Content-Type: application/json' --data '{\"channel\":\"#fw-releases\",\"text\":\"Firmware 2.8.0 is rolling out to cohort gw-west-03: gateways gw-301, gw-302, and gw-303.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C07FURROW&limit=20' -H \"Authorization: Bearer $SLACK_TOKEN\""
+   },
+   {
+    "title": "Check rollout assignment",
+    "command": "curl -fsS 'http://device-registry.internal.furrow/v1/gateways?cohort_id=gw-west-03&version=2.8.0' -H \"Authorization: Bearer $DEVICE_REGISTRY_TOKEN\"",
+    "output": "{\"cohort_id\":\"gw-west-03\",\"assigned\":[\"gw-301\",\"gw-302\",\"gw-303\"],\"pending\":[]}",
+    "idempotent": true,
+    "verify_command": "curl -fsS 'http://device-registry.internal.furrow/v1/firmware-releases?cohort_id=gw-west-03&version=2.8.0' -H \"Authorization: Bearer $DEVICE_REGISTRY_TOKEN\""
+   }
+  ],
+  "id": "p023"
+ },
+ {
+  "name": "reissue_integrator_api_key",
+  "goal": "Reissue the API key for integrator acme-agro, revoke the previous key, notify the owner, and record the rotation.",
+  "steps": [
+   {
+    "title": "Check current key status",
+    "command": "gcloud secrets versions describe latest --secret=projects/furrow-secrets/secrets/integrator-acme-agro-api-key --location=us-central1",
+    "output": "Latest secret version 17 is ACTIVE.",
+    "idempotent": true,
+    "verify_command": "gcloud secrets versions list --secret=projects/furrow-secrets/secrets/integrator-acme-agro-api-key --location=us-central1 --limit=1"
+   },
+   {
+    "title": "Confirm integrator account",
+    "command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/integrators/int_acme_agro",
+    "output": "Integrator int_acme_agro is active.",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/integrators/int_acme_agro"
+   },
+   {
+    "title": "Create replacement API key",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $(gcloud auth print-access-token)\" -H 'Content-Type: application/json' -d '{\"integrator_id\":\"int_acme_agro\",\"key_name\":\"acme-agro-2025-q1\"}' https://api.furrow.example/v1/integrators/int_acme_agro/api-keys",
+    "output": "Created key key_acme_2025_q1_7f3d.",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/integrators/int_acme_agro/api-keys"
+   },
+   {
+    "title": "Store replacement secret version",
+    "command": "printf '%s' 'key_acme_2025_q1_7f3d_secret' | gcloud secrets versions add projects/furrow-secrets/secrets/integrator-acme-agro-api-key --location=us-central1 --data-file=-",
+    "output": "Secret version 18 created.",
+    "idempotent": false,
+    "verify_command": "gcloud secrets versions list --secret=projects/furrow-secrets/secrets/integrator-acme-agro-api-key --location=us-central1 --limit=1"
+   },
+   {
+    "title": "Revoke previous API key",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/integrators/int_acme_agro/api-keys/key_acme_2024_nov_91a2/revoke",
+    "output": "API key key_acme_2024_nov_91a2 is revoked.",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/integrators/int_acme_agro/api-keys/key_acme_2024_nov_91a2"
+   },
+   {
+    "title": "Notify integrator of rotation",
+    "command": "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"channel\":\"#fw-integrator-support\",\"text\":\"@maria.acme Acme Agro API key rotated; new key key_acme_2025_q1_7f3d is ready in Secret Manager.\"}' https://hooks.slack.com/services/T04FURROW/B08KEYROT/rotationNotice2025",
+    "output": "Slack notification sent to #fw-integrator-support.",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04FURROW&limit=20' -H 'Authorization: Bearer xoxb-furrow-operator' | grep -F 'key_acme_2025_q1_7f3d' >/dev/null && echo 'rotation notice present'"
+   },
+   {
+    "title": "Publish key rotation event",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $(gcloud auth print-access-token)\" -H 'Content-Type: application/json' -d '{\"subject\":\"integrator.int_acme_agro.api_key_rotated\",\"key_id\":\"key_acme_2025_q1_7f3d\",\"previous_key_id\":\"key_acme_2024_nov_91a2\"}' https://pubsub.googleapis.com/v1/projects/furrow-prod/topics/integration-events:publish",
+    "output": "Published message 88231947156.",
+    "idempotent": false,
+    "verify_command": "gcloud pubsub topics describe integration-events --project=furrow-prod"
+   },
+   {
+    "title": "Record rotation audit entry",
+    "command": "psql -h 10.40.0.21 -U furrow -d furrow -c \"INSERT INTO api_key_audit (integrator_id,new_key_id,old_key_id,action) VALUES ('int_acme_agro','key_acme_2025_q1_7f3d','key_acme_2024_nov_91a2','reissued');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h 10.40.0.21 -U furrow -d furrow -c \"SELECT new_key_id, action FROM api_key_audit WHERE integrator_id='int_acme_agro' ORDER BY created_at DESC LIMIT 1;\""
+   }
+  ],
+  "id": "p024"
+ },
+ {
+  "name": "replay_valve_events_after_outage",
+  "goal": "Replay the missed irrigation-valve command events for field block FB-17 after the EMQX and scheduler outage.",
+  "steps": [
+   {
+    "title": "Inspect outage replay range",
+    "command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://api.furrow.example/v1/replays/valve?field_block_id=FB-17&from=2025-02-14T08:00:00Z&to=2025-02-14T10:30:00Z'",
+    "output": "Replay range contains 18 valve events for FB-17.",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://api.furrow.example/v1/replays/valve?field_block_id=FB-17&from=2025-02-14T08:00:00Z&to=2025-02-14T10:30:00Z' | jq '.event_count'"
+   },
+   {
+    "title": "Check valve controller health",
+    "command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/devices/valve-fb17-main/health",
+    "output": "valve-fb17-main is online; MQTT session connected.",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/devices/valve-fb17-main/health | jq -r '.status'"
+   },
+   {
+    "title": "Queue valve replay job",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $(gcloud auth print-access-token)\" -H 'Content-Type: application/json' -d '{\"job_type\":\"valve_event_replay\",\"field_block_id\":\"FB-17\",\"from\":\"2025-02-14T08:00:00Z\",\"to\":\"2025-02-14T10:30:00Z\",\"requested_by\":\"ops-oncall\"}' https://api.furrow.example/v1/replay-jobs",
+    "output": "Queued replay job replay_job_5d91a2.",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/replay-jobs/replay_job_5d91a2"
+   },
+   {
+    "title": "Publish valve command batch",
+    "command": "mosquitto_pub -h mqtt.furrow.example -p 8883 --cafile /etc/furrow/ca.crt -t 'furrow/FB-17/valve-fb17-main/command' -m '{\"event_batch\":\"evt_20250214_0830_FB17\",\"commands\":[{\"command_id\":\"cmd-FB17-0812\",\"action\":\"open\",\"duration_seconds\":900},{\"command_id\":\"cmd-FB17-0930\",\"action\":\"close\"}]}' -q 1",
+    "output": "Published valve command batch evt_20250214_0830_FB17 to EMQX.",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/devices/valve-fb17-main/commands | jq -e '.[] | select(.event_batch==\"evt_20250214_0830_FB17\")'"
+   },
+   {
+    "title": "Trigger physical valve operation",
+    "command": "curl -fsS -X POST -H \"Authorization: Bearer $(gcloud auth print-access-token)\" -H 'Content-Type: application/json' -d '{\"device_id\":\"valve-fb17-main\",\"action\":\"open\",\"duration_seconds\":900,\"reason\":\"outage_replay_evt_20250214_0830_FB17\"}' https://api.furrow.example/v1/devices/valve-fb17-main/actions",
+    "output": "Valve action act_7c2e19 accepted for 900 seconds.",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" https://api.furrow.example/v1/devices/valve-fb17-main/actions/act_7c2e19"
+   },
+   {
+    "title": "Send replay completion notice",
+    "command": "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"channel\":\"#fw-field-ops\",\"text\":\"@diego.ramos Replayed 18 valve events for FB-17 after the outage; valve-fb17-main accepted the command batch.\"}' https://hooks.slack.com/services/T04FURROW/B08FIELDOPS/valveReplayNotice2025",
+    "output": "Slack notification sent to #fw-field-ops.",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04FIELD17&limit=20' -H 'Authorization: Bearer xoxb-furrow-operator' | grep -F 'Replayed 18 valve events' >/dev/null && echo 'replay notice present'"
+   },
+   {
+    "title": "Verify valve telemetry",
+    "command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://api.furrow.example/v1/telemetry/valve-fb17-main?from=2025-02-14T08:00:00Z&to=2025-02-14T10:30:00Z'",
+    "output": "Telemetry shows open command at 08:30Z and close command at 09:30Z.",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $(gcloud auth print-access-token)\" 'https://api.furrow.example/v1/telemetry/valve-fb17-main?from=2025-02-14T08:00:00Z&to=2025-02-14T10:30:00Z' | jq -e '.samples | length > 0'"
+   },
+   {
+    "title": "Append replay audit record",
+    "command": "psql -h 10.40.0.21 -U furrow -d furrow -c \"INSERT INTO valve_replay_audit (replay_job_id,field_block_id,event_count,completed_by) VALUES ('replay_job_5d91a2','FB-17',18,'ops-oncall');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h 10.40.0.21 -U furrow -d furrow -c \"SELECT replay_job_id, event_count FROM valve_replay_audit WHERE replay_job_id='replay_job_5d91a2' ORDER BY created_at DESC LIMIT 1;\""
+   }
+  ],
+  "id": "p025"
+ },
+ {
+  "name": "seed_heartland_weather_stations",
+  "goal": "Seed the Heartland region with its approved weather station inventory and confirm the resulting rows.",
+  "steps": [
+   {
+    "title": "Check Heartland region exists",
+    "command": "curl -sS https://api.furrow.example/v1/regions/heartland",
+    "output": "{\"id\":\"heartland\",\"name\":\"Heartland\",\"status\":\"active\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/regions/heartland"
+   },
+   {
+    "title": "Inspect approved station inventory",
+    "command": "curl -sS https://api.furrow.example/v1/regions/heartland/stations?status=approved",
+    "output": "2 approved stations pending provisioning",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/regions/heartland/stations?status=approved"
+   },
+   {
+    "title": "Insert Heartland station records",
+    "command": "psql -d furrow -c \"INSERT INTO weather_stations (station_id, region_id, name, latitude, longitude, status) VALUES ('HW-042', 'heartland', 'Heartland North', 41.5868, -93.6250, 'provisioning'), ('HW-043', 'heartland', 'Heartland South', 40.9808, -92.4144, 'provisioning');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -Atc \"SELECT station_id FROM weather_stations WHERE region_id = 'heartland' ORDER BY station_id;\""
+   },
+   {
+    "title": "Create station ingest bindings",
+    "command": "psql -d furrow -c \"INSERT INTO station_ingest_bindings (station_id, topic, stream) VALUES ('HW-042', 'field.heartland.HW-042.telemetry', 'station-telemetry'), ('HW-043', 'field.heartland.HW-043.telemetry', 'station-telemetry');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -Atc \"SELECT station_id || '|' || topic FROM station_ingest_bindings WHERE station_id IN ('HW-042','HW-043') ORDER BY station_id;\""
+   },
+   {
+    "title": "Register station device credentials",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/devices/register -H 'Content-Type: application/json' -d '{\"device_id\":\"HW-042\",\"region\":\"heartland\",\"role\":\"weather_station\"}' && curl -sS -X POST https://api.furrow.example/v1/devices/register -H 'Content-Type: application/json' -d '{\"device_id\":\"HW-043\",\"region\":\"heartland\",\"role\":\"weather_station\"}'",
+    "output": "HW-042 registered; HW-043 registered",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/devices?region=heartland&role=weather_station'"
+   },
+   {
+    "title": "Publish station commissioning jobs",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/jobs -H 'Content-Type: application/json' -d '{\"type\":\"station_commission\",\"device_id\":\"HW-042\",\"region\":\"heartland\"}' && curl -sS -X POST https://api.furrow.example/v1/jobs -H 'Content-Type: application/json' -d '{\"type\":\"station_commission\",\"device_id\":\"HW-043\",\"region\":\"heartland\"}'",
+    "output": "job_8F21 created; job_8F22 created",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/jobs?type=station_commission&region=heartland'"
+   },
+   {
+    "title": "Send commissioning notifications",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/notifications -H 'Content-Type: application/json' -d '{\"channel\":\"slack\",\"target\":\"#fw-heartland-ops\",\"message\":\"Heartland stations HW-042 and HW-043 are being commissioned.\"}'",
+    "output": "notification_5a91 queued",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/notifications?channel=slack&target=%23fw-heartland-ops'"
+   },
+   {
+    "title": "Confirm station provisioning state",
+    "command": "psql -d furrow -Atc \"SELECT station_id || ':' || status FROM weather_stations WHERE region_id = 'heartland' ORDER BY station_id;\"",
+    "output": "HW-042:provisioning\nHW-043:provisioning",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -Atc \"SELECT count(*) FROM weather_stations WHERE region_id = 'heartland' AND status = 'provisioning';\""
+   }
+  ],
+  "id": "p026"
+ },
+ {
+  "name": "ship_warranty_replacements",
+  "goal": "Arrange warranty replacement shipments for two failed field gateways and verify that the shipment records were created.",
+  "steps": [
+   {
+    "title": "Check replacement device eligibility",
+    "command": "curl -sS https://api.furrow.example/v1/devices/EG-207",
+    "output": "{\"device_id\":\"EG-207\",\"warranty\":\"active\",\"failure\":\"offline\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/devices/EG-207"
+   },
+   {
+    "title": "Validate shipping destination",
+    "command": "curl -sS https://api.furrow.example/v1/sites/S-17/fulfillment-address",
+    "output": "site S-17: 4180 County Road 12, Ames, IA 50010",
+    "idempotent": true,
+    "verify_command": "curl -sS https://api.furrow.example/v1/sites/S-17/fulfillment-address"
+   },
+   {
+    "title": "Create first replacement shipment",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/shipments -H 'Content-Type: application/json' -d '{\"device_id\":\"EG-207\",\"site_id\":\"S-17\",\"reason\":\"warranty_replacement\",\"carrier\":\"USPS\",\"address_id\":\"addr-S-17-04\"}'",
+    "output": "shipment_ship_63a1 created",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/shipments/ship_ship_63a1"
+   },
+   {
+    "title": "Create second replacement shipment",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/shipments -H 'Content-Type: application/json' -d '{\"device_id\":\"EG-311\",\"site_id\":\"S-17\",\"reason\":\"warranty_replacement\",\"carrier\":\"USPS\",\"address_id\":\"addr-S-17-04\"}'",
+    "output": "shipment_ship_63a2 created",
+    "idempotent": false,
+    "verify_command": "curl -sS https://api.furrow.example/v1/shipments/ship_ship_63a2"
+   },
+   {
+    "title": "Send replacement shipment messages",
+    "command": "curl -sS -X POST https://api.furrow.example/v1/notifications -H 'Content-Type: application/json' -d '{\"channel\":\"sms\",\"to\":\"+15155550188\",\"message\":\"Furrow warranty replacements EG-207 and EG-311 have been shipped to site S-17.\"}'",
+    "output": "sms_msg_94de queued",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/notifications?sms_msg_94de'"
+   },
+   {
+    "title": "Publish warehouse dispatch events",
+    "command": "curl -sS -X POST https://events.furrow.example/v1/publish -H 'Content-Type: application/json' -d '{\"subject\":\"warehouse.dispatch.warranty\",\"site_id\":\"S-17\",\"shipments\":[\"ship_ship_63a1\",\"ship_ship_63a2\"],\"action\":\"release_packages\"}'",
+    "output": "event evt_7c42 published",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://events.furrow.example/v1/events?subject=warehouse.dispatch.warranty'"
+   },
+   {
+    "title": "Create warehouse audit records",
+    "command": "psql -d furrow -c \"INSERT INTO shipment_audit_log (shipment_id, action, actor) VALUES ('ship_ship_63a1', 'replacement_created', '@mrocha'), ('ship_ship_63a2', 'replacement_created', '@mrocha');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql -d furrow -Atc \"SELECT shipment_id || ':' || action FROM shipment_audit_log WHERE shipment_id IN ('ship_ship_63a1','ship_ship_63a2') ORDER BY shipment_id;\""
+   },
+   {
+    "title": "Verify replacement shipment status",
+    "command": "curl -sS 'https://api.furrow.example/v1/shipments?device_id=EG-207,EG-311&site_id=S-17'",
+    "output": "ship_ship_63a1:label_created; ship_ship_63a2:label_created",
+    "idempotent": true,
+    "verify_command": "curl -sS 'https://api.furrow.example/v1/shipments?device_id=EG-207,EG-311&site_id=S-17'"
+   }
+  ],
+  "id": "p027"
+ },
+ {
+  "name": "notify_riverbend_sensor_recall",
+  "goal": "Notify Riverbend Farm about the recalled moisture sensors, enqueue device-specific recall events, and place affected devices into a safe disabled state.",
+  "steps": [
+   {
+    "title": "List recalled Riverbend devices",
+    "command": "psql -d furrow -c \"SELECT device_id, device_type, firmware_version, status FROM devices WHERE farm_id = 'farm-riverbend' AND device_type = 'soil-moisture' ORDER BY device_id;\"",
+    "output": "3 recalled soil-moisture devices returned.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT count(*) FROM devices WHERE farm_id = 'farm-riverbend' AND device_type = 'soil-moisture';\""
+   },
+   {
+    "title": "Capture farm contact details",
+    "command": "psql -d furrow -c \"SELECT farm_id, slack_channel, contact_email FROM farms WHERE farm_id = 'farm-riverbend';\"",
+    "output": "farm-riverbend | #fw-riverbend | ops@riverbend.example.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -Atc \"SELECT slack_channel FROM farms WHERE farm_id = 'farm-riverbend';\""
+   },
+   {
+    "title": "Post recall notice to Slack",
+    "command": "curl -sS -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxb-furrow-recall' -H 'Content-Type: application/json; charset=utf-8' --data '{\"channel\":\"#fw-riverbend\",\"text\":\"URGENT: Riverbend soil-moisture sensors RB-SM-101, RB-SM-102, and RB-SM-103 are recalled. Do not operate them; use manual readings until replacement instructions arrive.\"}'",
+    "output": "Slack API response: {\"ok\":true,\"channel\":\"C04RIVERBEND\"}.",
+    "idempotent": false,
+    "verify_command": "curl -sS -G https://slack.com/api/conversations.history -H 'Authorization: Bearer xoxb-furrow-recall' --data-urlencode 'channel=C04RIVERBEND' --data-urlencode 'limit=20' | jq -r '.messages[] | select(.text | contains(\"RB-SM-101\")) | .ts' | head -1"
+   },
+   {
+    "title": "Enqueue device recall events",
+    "command": "for device in RB-SM-101 RB-SM-102 RB-SM-103; do nats pub furrow.device.recall \"{\\\"farm_id\\\":\\\"farm-riverbend\\\",\\\"device_id\\\":\\\"$device\\\",\\\"recall_id\\\":\\\"RECALL-2024-0614\\\"}\"; done",
+    "output": "Published 3 recall events.",
+    "idempotent": false,
+    "verify_command": "nats stream report DEVICE_COMMANDS --since='10m' | grep 'RECALL-2024-0614' | wc -l"
+   },
+   {
+    "title": "Disable recalled soil sensors",
+    "command": "psql -d furrow -c \"UPDATE devices SET status = 'disabled', disabled_reason = 'recall RECALL-2024-0614' WHERE farm_id = 'farm-riverbend' AND device_id IN ('RB-SM-101','RB-SM-102','RB-SM-103');\"",
+    "output": "UPDATE 3",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -c \"SELECT device_id, status, disabled_reason FROM devices WHERE device_id IN ('RB-SM-101','RB-SM-102','RB-SM-103') ORDER BY device_id;\""
+   },
+   {
+    "title": "Create recall response ticket",
+    "command": "curl -sS -X POST https://gitlab.example.com/api/v4/projects/furrow%2Foperations/issues -H 'PRIVATE-TOKEN: glpat-furrow-ops' --data-urlencode 'title=Replace Riverbend recalled soil sensors' --data-urlencode 'description=Replace RB-SM-101, RB-SM-102, and RB-SM-103 under recall RECALL-2024-0614 and confirm disposal with the farm.' --data-urlencode 'labels=field-safety,device-recall'",
+    "output": "GitLab issue #1842 created.",
+    "idempotent": false,
+    "verify_command": "curl -sS https://gitlab.example.com/api/v4/projects/furrow%2Foperations/issues/1842 -H 'PRIVATE-TOKEN: glpat-furrow-ops' | jq -r '[.iid,.title,.state] | @tsv'"
+   },
+   {
+    "title": "Verify no recalled devices remain active",
+    "command": "psql -d furrow -c \"SELECT count(*) AS active_recalled_devices FROM devices WHERE farm_id = 'farm-riverbend' AND device_id IN ('RB-SM-101','RB-SM-102','RB-SM-103') AND status <> 'disabled';\"",
+    "output": "active_recalled_devices: 0",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -Atc \"SELECT count(*) FROM devices WHERE farm_id = 'farm-riverbend' AND device_id IN ('RB-SM-101','RB-SM-102','RB-SM-103') AND status = 'disabled';\""
+   },
+   {
+    "title": "Confirm recall audit entries",
+    "command": "psql -d furrow -c \"SELECT event_type, device_id, created_at FROM device_audit_events WHERE recall_id = 'RECALL-2024-0614' ORDER BY created_at;\"",
+    "output": "Recall audit entries are present for all 3 devices.",
+    "idempotent": true,
+    "verify_command": "psql -d furrow -Atc \"SELECT count(DISTINCT device_id) FROM device_audit_events WHERE recall_id = 'RECALL-2024-0614' AND device_id IN ('RB-SM-101','RB-SM-102','RB-SM-103');\""
+   }
+  ],
+  "id": "p028"
+ },
+ {
+  "name": "create_gke_us_west4_node_pool",
+  "goal": "Create a new production GKE cluster and field-worker node pool in the us-west4 region.",
+  "steps": [
+   {
+    "title": "Verify GCP authentication",
+    "command": "gcloud auth list --filter=status:ACTIVE --format='value(account)'",
+    "output": "furrow-ops@furrow-ag.com",
+    "idempotent": true,
+    "verify_command": "gcloud auth list --filter=status:ACTIVE --format='value(account)'"
+   },
+   {
+    "title": "Check regional compute quota",
+    "command": "gcloud compute regions describe us-west4 --project=furrow-prod-4821 --format='value(quota)'",
+    "output": "Compute quota information returned for us-west4",
+    "idempotent": true,
+    "verify_command": "gcloud compute regions describe us-west4 --project=furrow-prod-4821 --format='value(name)'"
+   },
+   {
+    "title": "Create node pool service account",
+    "command": "gcloud iam service-accounts create furrow-gke-field-workers-usw4@furrow-prod-4821.iam.gserviceaccount.com --display-name='Furrow GKE field workers us-west4' --project=furrow-prod-4821",
+    "output": "Service account furrow-gke-field-workers-usw4 created",
+    "idempotent": false,
+    "verify_command": "gcloud iam service-accounts describe furrow-gke-field-workers-usw4@furrow-prod-4821.iam.gserviceaccount.com --project=furrow-prod-4821 --format='value(email)'"
+   },
+   {
+    "title": "Create regional GKE cluster",
+    "command": "gcloud container clusters create furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --num-nodes=1 --machine-type=e2-standard-4 --service-account=furrow-gke-field-workers-usw4@furrow-prod-4821.iam.gserviceaccount.com --network=projects/furrow-prod-4821/global/networks/furrow-vpc --subnetwork=projects/furrow-prod-4821/regions/us-west4/subnetworks/furrow-field-subnet --release-channel=regular --no-enable-autoscaling",
+    "output": "Cluster furrow-us-west4-01 created in us-west4",
+    "idempotent": false,
+    "verify_command": "gcloud container clusters describe furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --format='value(status)'"
+   },
+   {
+    "title": "Create field worker pool",
+    "command": "gcloud container node-pools create field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --num-nodes=3 --machine-type=e2-standard-4 --service-account=furrow-gke-field-workers-usw4@furrow-prod-4821.iam.gserviceaccount.com --max-pods-per-node=64",
+    "output": "Node pool field-workers-01 created with three nodes",
+    "idempotent": false,
+    "verify_command": "gcloud container node-pools describe field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --format='value(status)'"
+   },
+   {
+    "title": "Apply fixed node labels",
+    "command": "gcloud container node-pools update field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --node-labels=workload=field-workers,region=us-west4",
+    "output": "Node pool labels updated",
+    "idempotent": true,
+    "verify_command": "gcloud container node-pools describe field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --format='value(node_config.labels)'"
+   },
+   {
+    "title": "Set fixed pool size",
+    "command": "gcloud container node-pools resize field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --size=3",
+    "output": "Node pool field-workers-01 resized to 3",
+    "idempotent": true,
+    "verify_command": "gcloud container node-pools describe field-workers-01 --cluster=furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --format='value(autoscaling.enabled)'"
+   },
+   {
+    "title": "Verify cluster readiness",
+    "command": "gcloud container clusters get-credentials furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 && kubectl --context=gke_furrow-prod-4821_us-west4_furrow-us-west4-01 get nodes -l workload=field-workers -o wide",
+    "output": "kubectl get nodes returned three Ready field-worker nodes",
+    "idempotent": true,
+    "verify_command": "gcloud container clusters describe furrow-us-west4-01 --project=furrow-prod-4821 --region=us-west4 --format='value(status)'"
+   }
+  ],
+  "id": "p029"
+ },
+ {
+  "name": "announce_customer_maintenance_window",
+  "goal": "Record, publish, and announce the scheduled furrow irrigation service maintenance window to customers.",
+  "steps": [
+   {
+    "title": "Check current maintenance record",
+    "command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -Atc \"SELECT id, status FROM maintenance_windows WHERE service_name='irrigation-scheduler' ORDER BY created_at DESC LIMIT 5;\"",
+    "output": "1841|completed\\n1832|completed",
+    "idempotent": true,
+    "verify_command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -Atc \"SELECT count(*) FROM maintenance_windows WHERE service_name='irrigation-scheduler' AND status='scheduled';\""
+   },
+   {
+    "title": "Confirm Slack maintenance channel",
+    "command": "curl --fail --silent --show-error -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' 'https://slack.com/api/conversations.info?channel=C08FURMNT' | jq -r '.channel.name // .error'",
+    "output": "fw-maintenance",
+    "idempotent": true,
+    "verify_command": "curl --fail --silent --show-error -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' 'https://slack.com/api/conversations.info?channel=C08FURMNT' | jq -r '.channel.id'"
+   },
+   {
+    "title": "Create maintenance window record",
+    "command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -c \"INSERT INTO maintenance_windows (id, service_name, starts_at, ends_at, status, created_by) VALUES (1847, 'irrigation-scheduler', '2026-02-14T02:00:00Z', '2026-02-14T04:00:00Z', 'scheduled', '@maya.chen');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -Atc \"SELECT id, starts_at, ends_at, status FROM maintenance_windows WHERE id=1847;\""
+   },
+   {
+    "title": "Publish maintenance event",
+    "command": "nats --server nats://nats-stream.furrow-prod-4821.nats.io:4222 pub furrow.maintenance.irrigation-scheduler '{\"maintenance_id\":1847,\"service\":\"irrigation-scheduler\",\"start\":\"2026-02-14T02:00:00Z\",\"end\":\"2026-02-14T04:00:00Z\",\"owner\":\"@maya.chen\"}'",
+    "output": "Published maintenance event 1847",
+    "idempotent": false,
+    "verify_command": "nats --server nats://nats-stream.furrow-prod-4821.nats.io:4222 stream report furrow-events"
+   },
+   {
+    "title": "Post customer maintenance notice",
+    "command": "curl --fail --silent --show-error -X POST -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' -H 'Content-Type: application/json; charset=utf-8' --data '{\"channel\":\"C08FURMNT\",\"text\":\"@customer-success Furrow irrigation-scheduler maintenance is scheduled for 2026-02-14 02:00-04:00 UTC. Field irrigation commands may be delayed during this window.\",\"username\":\"furrow-maintenance\"}' 'https://slack.com/api/chat.postMessage' | jq -r '.ok, .ts'",
+    "output": "true\\n1771048817.000100",
+    "idempotent": false,
+    "verify_command": "curl --fail --silent --show-error -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' 'https://slack.com/api/conversations.history?channel=C08FURMNT&limit=10' | jq -r '.messages[] | select(.text | contains(\"1847\")) | .ts'"
+   },
+   {
+    "title": "Set scheduler maintenance mode",
+    "command": "curl --fail --silent --show-error -X PUT -H 'Authorization: Bearer furrow-ops-7d4c9a' -H 'Content-Type: application/json' --data '{\"maintenance_mode\":true,\"maintenance_id\":1847}' 'https://config.furrow.ag/irrigation-scheduler/maintenance' | jq -r '.status'",
+    "output": "maintenance_mode=true",
+    "idempotent": true,
+    "verify_command": "curl --fail --silent --show-error -H 'Authorization: Bearer furrow-ops-7d4c9a' 'https://config.furrow.ag/irrigation-scheduler/maintenance' | jq -r '.maintenance_mode, .maintenance_id'"
+   },
+   {
+    "title": "Verify maintenance record state",
+    "command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -Atc \"SELECT id, status, starts_at, ends_at, created_by FROM maintenance_windows WHERE id=1847;\"",
+    "output": "1847|scheduled|2026-02-14 02:00:00+00|2026-02-14 04:00:00+00|@maya.chen",
+    "idempotent": true,
+    "verify_command": "psql 'postgresql://furrow_app:secret@10.42.0.14:5432/furrow' -Atc \"SELECT count(*) FROM maintenance_windows WHERE id=1847 AND status='scheduled';\""
+   },
+   {
+    "title": "Confirm announcement timestamp",
+    "command": "curl --fail --silent --show-error -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' 'https://slack.com/api/conversations.history?channel=C08FURMNT&oldest=1771048800&latest=1771048900&inclusive=true' | jq -r '.messages[] | [.ts,.username] | @tsv'",
+    "output": "1771048817.000100\\tfurrow-maintenance",
+    "idempotent": true,
+    "verify_command": "curl --fail --silent --show-error -H 'Authorization: Bearer xoxb-4FURROW-4821-maintenance' 'https://slack.com/api/conversations.history?channel=C08FURMNT&oldest=1771048800&latest=1771048900&inclusive=true' | jq -r '[.messages[] | select(.text | contains(\"irrigation-scheduler maintenance\"))] | length'"
+   }
+  ],
+  "id": "p030"
+ },
+ {
+  "name": "export_q1_regulator_compliance",
+  "goal": "Create, enqueue, and announce a regulator-facing export of Q1 irrigation compliance records.",
+  "steps": [
+   {
+    "title": "Validate compliance source data",
+    "command": "psql \"postgresql://compliance_writer:Cr0pAudit!2026@timescale.furrow-prod:5432/furrow\" -c \"SELECT count(*) AS audited_events, min(observed_at) AS first_event, max(observed_at) AS last_event FROM irrigation_compliance_events WHERE observed_at >= '2026-01-01' AND observed_at < '2026-04-01';\"",
+    "output": "audited_events | first_event         | last_event",
+    "idempotent": true,
+    "verify_command": "psql \"postgresql://compliance_writer:Cr0pAudit!2026@timescale.furrow-prod:5432/furrow\" -c \"SELECT count(*) FROM irrigation_compliance_events WHERE observed_at >= '2026-01-01' AND observed_at < '2026-04-01';\""
+   },
+   {
+    "title": "Check exporter image digest",
+    "command": "gcloud container images describe gcr.io/furrow-prod/compliance-exporter@sha256:6e4c9a8d7b1f2a536ce814d9f307b6b5439a21c8ef9071d3b5a6e2c0f84d719 --format='value(image_status)'",
+    "output": "READY",
+    "idempotent": true,
+    "verify_command": "gcloud container images describe gcr.io/furrow-prod/compliance-exporter@sha256:6e4c9a8d7b1f2a536ce814d9f307b6b5439a21c8ef9071d3b5a6e2c0f84d719 --format='value(image_status)'"
+   },
+   {
+    "title": "Create compliance export request",
+    "command": "psql \"postgresql://compliance_writer:Cr0pAudit!2026@timescale.furrow-prod:5432/furrow\" -c \"INSERT INTO compliance_export_requests (request_id, request_name, regulator, period_start, period_end, requested_by, created_at) VALUES (gen_random_uuid(), 'q1-regulator-export', 'Agra-Regulator-7', '2026-01-01', '2026-03-31', 'operator-maya', now());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"postgresql://compliance_reader:ReadOnly!2026@timescale.furrow-prod:5432/furrow\" -c \"SELECT request_id, request_name, regulator, created_at FROM compliance_export_requests WHERE request_name = 'q1-regulator-export' ORDER BY created_at DESC LIMIT 5;\""
+   },
+   {
+    "title": "Enqueue compliance export job",
+    "command": "nats pub compliance.exports.enqueued '{\"request_name\":\"q1-regulator-export\",\"regulator\":\"Agra-Regulator-7\",\"period_start\":\"2026-01-01\",\"period_end\":\"2026-03-31\",\"message_id\":\"'$(uuidgen)'\"}' --server nats.furrow-prod:4222",
+    "output": "Published 156 bytes",
+    "idempotent": false,
+    "verify_command": "nats stream report COMPLIANCE_EXPORTS --server nats.furrow-prod:4222"
+   },
+   {
+    "title": "Check exporter queue backlog",
+    "command": "nats consumer info COMPLIANCE_EXPORTS compliance-exporter --server nats.furrow-prod:4222",
+    "output": "Num Pending: 0 | Num Ack Pending: 1 | Delivered: 18422",
+    "idempotent": true,
+    "verify_command": "nats consumer info COMPLIANCE_EXPORTS compliance-exporter --server nats.furrow-prod:4222"
+   },
+   {
+    "title": "Read export request status",
+    "command": "psql \"postgresql://compliance_reader:ReadOnly!2026@timescale.furrow-prod:5432/furrow\" -c \"SELECT status, output_uri, row_count FROM compliance_export_requests WHERE request_name = 'q1-regulator-export' ORDER BY created_at DESC LIMIT 1;\"",
+    "output": "status | output_uri | row_count\nready | gs://furrow-regulator-exports/2026/q1/ | 184762",
+    "idempotent": true,
+    "verify_command": "psql \"postgresql://compliance_reader:ReadOnly!2026@timescale.furrow-prod:5432/furrow\" -c \"SELECT status, completed_at FROM compliance_export_requests WHERE request_name = 'q1-regulator-export' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Announce report to Slack",
+    "command": "curl -sS -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxb-39218475-441-5938' -H 'Content-Type: application/json; charset=utf-8' --data '{\"channel\":\"#fw-compliance-exports\",\"text\":\"Q1 regulator compliance export is ready: Agra-Regulator-7, 184,762 records. Review before release.\"}'",
+    "output": "{\\\"ok\\\":true,\\\"channel\\\":\\\"C08EXPORT\\\",\\\"ts\\\":\\\"1774933860.418021\\\"}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://slack.com/api/conversations.history?channel=C08EXPORT&limit=20' -H 'Authorization: Bearer xoxb-39218475-441-5938' | jq -r '.messages[] | select(.text | contains(\"Q1 regulator compliance export is ready\")) | [.ts,.text] | @tsv'"
+   },
+   {
+    "title": "Verify regulator report object",
+    "command": "gcloud storage ls -l gs://furrow-regulator-exports/2026/q1/q1-irrigation-compliance.parquet",
+    "output": "gs://furrow-regulator-exports/2026/q1/q1-irrigation-compliance.parquet  28473180  2026-03-31T19:31:00Z",
+    "idempotent": true,
+    "verify_command": "gcloud storage stat gs://furrow-regulator-exports/2026/q1/q1-irrigation-compliance.parquet --format='value(size,md5Hash)'"
+   }
+  ],
+  "id": "p031"
+ },
+ {
+  "name": "enqueue_field_firmware_482",
+  "goal": "Create a controlled firmware 4.8.2 rollout and enqueue update jobs for twelve selected field devices.",
+  "steps": [
+   {
+    "title": "Validate firmware target devices",
+    "command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT device_id, model, current_firmware FROM field_devices WHERE farm_id = 'farm-blue-ridge' AND device_id IN ('soil-sbr-0042','soil-sbr-0043','soil-sbr-0044','valve-sbr-0101','valve-sbr-0102','pump-sbr-0201','pump-sbr-0202','weather-sbr-0301','weather-sbr-0302','flow-sbr-0401','flow-sbr-0402','telemetry-sbr-0501') ORDER BY device_id;\"",
+    "output": "12 devices returned; current_firmware values range from 4.7.6 to 4.8.1",
+    "idempotent": true,
+    "verify_command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT count(*) FROM field_devices WHERE farm_id = 'farm-blue-ridge' AND device_id IN ('soil-sbr-0042','soil-sbr-0043','soil-sbr-0044','valve-sbr-0101','valve-sbr-0102','pump-sbr-0201','pump-sbr-0202','weather-sbr-0301','weather-sbr-0302','flow-sbr-0401','flow-sbr-0402','telemetry-sbr-0501');\""
+   },
+   {
+    "title": "Check firmware package artifact",
+    "command": "gcloud storage ls -l gs://furrow-firmware-releases/firmware-4.8.2/firmware-4.8.2-manifest.json",
+    "output": "gs://furrow-firmware-releases/firmware-4.8.2/firmware-4.8.2-manifest.json  1042  2026-03-31T18:05:22Z",
+    "idempotent": true,
+    "verify_command": "gcloud storage stat gs://furrow-firmware-releases/firmware-4.8.2/firmware-4.8.2-manifest.json --format='value(size,generation)'"
+   },
+   {
+    "title": "Create firmware rollout record",
+    "command": "psql \"postgresql://fleet_writer:Fl33tWrite!2026@device-registry.furrow-prod:5432/devices\" -c \"INSERT INTO firmware_rollouts (rollout_id, version, farm_id, manifest_uri, initiated_by, created_at) VALUES (gen_random_uuid(), '4.8.2', 'farm-blue-ridge', 'gs://furrow-firmware-releases/firmware-4.8.2/firmware-4.8.2-manifest.json', 'operator-maya', now());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT rollout_id, version, farm_id, created_at FROM firmware_rollouts WHERE version = '4.8.2' AND farm_id = 'farm-blue-ridge' ORDER BY created_at DESC LIMIT 5;\""
+   },
+   {
+    "title": "Publish device update jobs",
+    "command": "for device in soil-sbr-0042 soil-sbr-0043 soil-sbr-0044 valve-sbr-0101 valve-sbr-0102 pump-sbr-0201 pump-sbr-0202 weather-sbr-0301 weather-sbr-0302 flow-sbr-0401 flow-sbr-0402 telemetry-sbr-0501; do nats pub firmware.update.enqueue \"{\\\"device_id\\\":\\\"$device\\\",\\\"version\\\":\\\"4.8.2\\\",\\\"manifest_uri\\\":\\\"gs://furrow-firmware-releases/firmware-4.8.2/firmware-4.8.2-manifest.json\\\",\\\"message_id\\\":\\\"$(uuidgen)\\\"}\" --server nats.furrow-prod:4222; done",
+    "output": "Published firmware update message for all 12 devices",
+    "idempotent": false,
+    "verify_command": "nats stream report FIRMWARE_UPDATES --server nats.furrow-prod:4222"
+   },
+   {
+    "title": "Append rollout event records",
+    "command": "psql \"postgresql://fleet_writer:Fl33tWrite!2026@device-registry.furrow-prod:5432/devices\" -c \"INSERT INTO firmware_device_events (event_id, rollout_id, device_id, event_type, version, recorded_at) SELECT gen_random_uuid(), r.rollout_id, d.device_id, 'update_enqueued', '4.8.2', now() FROM firmware_rollouts r CROSS JOIN (VALUES ('soil-sbr-0042'),('soil-sbr-0043'),('soil-sbr-0044'),('valve-sbr-0101'),('valve-sbr-0102'),('pump-sbr-0201'),('pump-sbr-0202'),('weather-sbr-0301'),('weather-sbr-0302'),('flow-sbr-0401'),('flow-sbr-0402'),('telemetry-sbr-0501')) AS d(device_id) WHERE r.version = '4.8.2' AND r.farm_id = 'farm-blue-ridge';\"",
+    "output": "INSERT 0 12",
+    "idempotent": false,
+    "verify_command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT event_type, count(*) FROM firmware_device_events WHERE version = '4.8.2' GROUP BY event_type ORDER BY event_type;\""
+   },
+   {
+    "title": "Check firmware worker backlog",
+    "command": "nats consumer info FIRMWARE_UPDATES firmware-update-worker --server nats.furrow-prod:4222",
+    "output": "Num Pending: 0 | Num Ack Pending: 12 | Delivered: 9821",
+    "idempotent": true,
+    "verify_command": "nats consumer info FIRMWARE_UPDATES firmware-update-worker --server nats.furrow-prod:4222"
+   },
+   {
+    "title": "Notify firmware rollout channel",
+    "command": "curl -sS -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxb-39218475-441-5938' -H 'Content-Type: application/json; charset=utf-8' --data '{\"channel\":\"#fw-device-rollouts\",\"text\":\"Firmware 4.8.2 has been enqueued for 12 devices at farm-blue-ridge. Track progress in device-registry.\"}'",
+    "output": "{\\\"ok\\\":true,\\\"channel\\\":\\\"C08FIRMWARE\\\",\\\"ts\\\":\\\"1774934220.663104\\\"}",
+    "idempotent": false,
+    "verify_command": "curl -sS 'https://slack.com/api/conversations.history?channel=C08FIRMWARE&limit=20' -H 'Authorization: Bearer xoxb-39218475-441-5938' | jq -r '.messages[] | select(.text | contains(\"Firmware 4.8.2 has been enqueued for 12 devices\")) | [.ts,.text] | @tsv'"
+   },
+   {
+    "title": "Verify rollout job records",
+    "command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT r.version, count(e.event_id) AS enqueued_events, count(DISTINCT e.device_id) AS targeted_devices FROM firmware_rollouts r JOIN firmware_device_events e ON e.rollout_id = r.rollout_id WHERE r.farm_id = 'farm-blue-ridge' GROUP BY r.rollout_id, r.version ORDER BY max(r.created_at) DESC LIMIT 1;\"",
+    "output": "version | enqueued_events | targeted_devices\n4.8.2   | 12              | 12",
+    "idempotent": true,
+    "verify_command": "psql \"postgresql://device_reader:ReadOnly!2026@device-registry.furrow-prod:5432/devices\" -c \"SELECT count(*) AS pending_jobs FROM firmware_update_jobs WHERE version = '4.8.2' AND status = 'pending';\""
+   }
+  ],
+  "id": "p032"
+ }
+]
