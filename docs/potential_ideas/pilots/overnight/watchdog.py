@@ -10,6 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PAUSE, ERRORS, USAGE, LOG = HERE / "PAUSE", HERE / "errors.jsonl", HERE / "usage.jsonl", HERE / "monitor.log"
+BULK_MODEL = "stealth/space-bunny-alpha"
 QUOTA_WORDS = ("quota", "credit", "insufficient", "exceeded", "limit reached", "daily")
 
 
@@ -58,7 +59,8 @@ def main():
     end = time.time() + args.minutes * 60
     paused_until, hard = 0, False
     while time.time() < end:
-        errs = tail_records(ERRORS, 300)
+        # Only the bulk model matters; small replications on rate-limited ':free' models must not pause everything.
+        errs = [e for e in tail_records(ERRORS, 300) if e["detail"].startswith(BULK_MODEL)]
         calls = len(tail_records(USAGE, 300))
         n429 = sum(e["kind"] == "http429" for e in errs)
         quota = [e for e in errs if e["kind"] in ("http402",) or any(w in e["detail"].lower() for w in QUOTA_WORDS)]
