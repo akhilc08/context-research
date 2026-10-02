@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E11, E12, E13, and E16 were still running. Their rows say so.
+Status: written while E3, E12, E13, E16, and E17 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -25,7 +25,7 @@ Status: written while E3, E11, E12, E13, and E16 were still running. Their rows 
 | E8 `e8_inflight` | Compaction in the middle of a multi-step procedure | The loss is the plan, not position: drift and invented ids. Ledger and progress watchpoint do nothing (31 to 34% vs 31%). Pinning the original request restores full-context performance. A naive progress note caused harmful repeats. Pilot. | `e40cc2c` |
 | E9 `e9_cheap_validation` | Can cheap signals predict harmful compactions? | Draft agreement fails (AUROC 0.59). Round-trip reconstruction works (0.76, noise ceiling 0.78) at about 15% of the cost. Prompt style and budget alone predict nearly as well. | `c03929d` |
 | E10 `e10_roundtrip_gate` | Round-trip as a gate that triggers recompaction | Generic self-written questions do not predict harm held out (0.55). The gate ties always-recompacting at 3.3x the tokens; the paired-continuation gate is near useless. A structured prompt beats every repair arm at no extra cost (53% vs 80 to 97% harm). | `ba34598` |
-| E11 `e11_subtle_laundering` | E5 with subtle injections, a counterfactual causal test, and an attribution watchpoint | Running. | |
+| E11 `e11_subtle_laundering` | E5 with subtle injections, a counterfactual causal test, and an attribution watchpoint | Writing a planted action into a summary as a remaining step makes the agent act 88% of the time, against 33% with its source named (Holm p = 1e-10). But renaming the source in naturally laundered summaries did not reduce acting (59% vs 64%). Procedural checklist items launder most. Provenance prompt plus pinning remains best (1% and 0%). Labeling laundered sentences `[UNVERIFIED]` did not stop the agent. | `3aa5aa5` |
 | E12 `e12_rot_vs_compaction` | Session length at which compaction beats full context | Running. | |
 | E13 `e13_plan_pinning` | E8 at realistic length, with a safe in-flight marker | Running. | |
 | E14 `e14_versioned_pin` | Pin each fact's value history instead of only the newest value | Versioned pin 95% vs newest-value pin 83% on LongMemEval (Holm p = 0.025), history questions 19% to 85%, current questions unchanged, beats token-matched notes. Canonical keys add nothing measurable. | `c8b76c3` |
