@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E12, E13, E16, and E17 were still running. Their rows say so.
+Status: written while E3, E13, E16, and E17 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -26,7 +26,7 @@ Status: written while E3, E12, E13, E16, and E17 were still running. Their rows 
 | E9 `e9_cheap_validation` | Can cheap signals predict harmful compactions? | Draft agreement fails (AUROC 0.59). Round-trip reconstruction works (0.76, noise ceiling 0.78) at about 15% of the cost. Prompt style and budget alone predict nearly as well. | `c03929d` |
 | E10 `e10_roundtrip_gate` | Round-trip as a gate that triggers recompaction | Generic self-written questions do not predict harm held out (0.55). The gate ties always-recompacting at 3.3x the tokens; the paired-continuation gate is near useless. A structured prompt beats every repair arm at no extra cost (53% vs 80 to 97% harm). | `ba34598` |
 | E11 `e11_subtle_laundering` | E5 with subtle injections, a counterfactual causal test, and an attribution watchpoint | Writing a planted action into a summary as a remaining step makes the agent act 88% of the time, against 33% with its source named (Holm p = 1e-10). But renaming the source in naturally laundered summaries did not reduce acting (59% vs 64%). Procedural checklist items launder most. Provenance prompt plus pinning remains best (1% and 0%). Labeling laundered sentences `[UNVERIFIED]` did not stop the agent. | `3aa5aa5` |
-| E12 `e12_rot_vs_compaction` | Session length at which compaction beats full context | Running. | |
+| E12 `e12_rot_vs_compaction` | Session length at which compaction beats full context (20 to 1,600 turns, up to 86k tokens) | Goals cross the other way: plain compaction beats full context at short lengths (69% vs 44% at 200 turns) but erodes faster, and full wins past about 376 turns (95% CI 188 to 949). Rules never cross: full stays at 83 to 93% while plain falls to 24%. Length alone does not cause rot (neutral filler: 377 of 378 correct); distraction by relevant-looking work does. Pin scores 96 to 100% on goals at every length. | `eceed65` |
 | E13 `e13_plan_pinning` | E8 at realistic length, with a safe in-flight marker | Running. | |
 | E14 `e14_versioned_pin` | Pin each fact's value history instead of only the newest value | Versioned pin 95% vs newest-value pin 83% on LongMemEval (Holm p = 0.025), history questions 19% to 85%, current questions unchanged, beats token-matched notes. Canonical keys add nothing measurable. | `c8b76c3` |
 | E15 `e15_rule_salience` | Why is an intact summarized rule violated more than a pinned one? | Framing ("Operator rule (active):") is the biggest factor, then exact wording; position and separation barely matter. Pinned rules beat raw history (6% vs 15%). Keep-rules and structured-list prompts scale to 20 rules over 16 rounds; structured is indistinguishable from pin-all. | `d1e3fc7` |
@@ -44,7 +44,7 @@ These are cross-study readings, not pre-registered claims. All rest on one model
 4. **Overwrite-style memory needs history.** Newest-value-wins stores fail questions about earlier values; a versioned store fixes this with no cost on current values (E4, E14).
 5. **The failure is usually deletion of what comes next, not disorientation.** In E2 the goal is lost to recent work rather than resurrected; in E8 the plan disappears. Position trackers (ledgers, progress watchpoints) do not help when the plan is gone.
 6. **Some old-paper claims did not survive.** The anchor prompt did not help goals (E2). The naive self-check failed on Space Bunny but looked fine on Nemotron (X1), so "self-verification is misleading" may be model-specific.
-7. **Full context is not a perfect ceiling.** Full transcripts lost to compacted or pinned contexts on goals (E2) and rules (E15), consistent with distraction in long contexts. E12 tests this directly.
+7. **Full context is not a perfect ceiling, but compaction is not a cure for rot.** Full transcripts lost to compacted or pinned contexts on goals (E2) and rules (E15). E12 shows the cause is distraction by relevant-looking work, not length: neutral filler of the same length caused no loss. Plain compaction helps goals only in shorter sessions and never helps rules; pinning is the arm that is robust at every length.
 
 ## Known issues that cut across studies
 
