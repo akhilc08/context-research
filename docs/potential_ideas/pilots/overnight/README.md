@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E23 and E24 were still running. Their rows say so.
+Status: written while E23, E24, and E25 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -47,6 +47,7 @@ The other components (provenance-attributing prompt, standing-rules list, striki
 | E22 `e22_taubench_process` | Confirmatory process-graded τ-bench (retail and airline, policy stripped from tool descriptions, deterministic violation detectors, 2 trials) | Pre-registered: compaction raises runs with a process violation from 5.7% to 28.3% (retail, Holm p = 3e-10) and 10% to 33% (airline, Holm p = 4e-4). Pin and pinrules restore the uncompacted level. The relevance-filtered watchpoint does not repair it in retail (23.5%), because the agent can still recite the confirmation rule after compaction but stops following it, so the check never fires. Reward is null throughout. Detector kappa 0.70. | `81c8c2b` |
 | E23 `e23_pin_scale` | Does operator-turn pinning hold up with 20 to 200 operator turns, and which bounded alternative (directive filter, periodic consolidation, ledger) keeps accuracy? | Running. | |
 | E24 `e24_minimal_recipe` | Pre-registered confirmation of the two-component minimal recipe (non-inferior to the full recipe, better than full context and pin_raw) on a new domain | Running. | |
+| E25 `e25_exec_sandbox` | Compaction in an executed coding sandbox (real file edits, tests, commits through a restricted tool set), graded from the final repository | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
 ## What the night suggests
