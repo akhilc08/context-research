@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E16, E20, and E21 were still running. Their rows say so.
+Status: written while E16, E20, and E21 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -17,7 +17,7 @@ Status: written while E3, E16, E20, and E21 were still running. Their rows say s
 |---|---|---|---|
 | E1 `e1_rule_scaling` | Does Watchpoint lose to pinning as the number of tracked rules N grows? | Plain compaction worsens with N (53% to 79% violations). Pin-all holds at 6 to 14% at every N. Batched watchpoint does not degrade with N but trails pinning (pooled 31 vs 16 of 192, p = 0.008) and costs more. The naive self-check fails (kappa 0.00). | `f03b9bc` |
 | E2 `e2_goal_resurrection` | Goal resurrection without the old keyword leak, with a pinned-goal baseline | Pinned goal 97% ties watchpoint 98% at no extra calls; plain 81%. The failure is goal loss to recent work, not resurrection. The anchor prompt does not help (75%). Full context scores only 63%. | `43070de` |
-| E3 `e3_taubench` | Compaction on a modified τ-bench retail | Running. | |
+| E3 `e3_taubench` | Compaction on a modified τ-bench (policy moved into history, forced compaction) | On stock retail, compaction does not measurably hurt reward (compact vs uncompacted history -0.030, CI -0.100 to +0.035), and pin and watchpoint do not help; removing the policy entirely does not hurt either, because tool descriptions repeat the rules and the reward checks only the final database. With policy sentences stripped from tool descriptions (exploratory), compaction raises writes made without explicit user confirmation from 4% to 26%, and pin or watchpoint bring it back to about 8%. Watchpoint patched on every check. Airline: nothing significant. | `cea4e24` |
 | E4 `e4_supersede` | Knowledge updates under bounded notes (Supersede, LongMemEval) | Newest-value pin 81% vs 300-char notes 67%. Watchpoint patched 153 of 154 rounds and did not beat pin. Newest-value pins fail history questions (1 of 13). | `3f40829` |
 | E5 `e5_provenance` | Does compaction launder untrusted tool text into operator instructions? | Yes, in 17 to 23% of plain summaries, and the agent then usually acts on it. But rule loss dominates (violations 0% to 50%). Provenance-attributing prompt plus pinning blocked every injected action without hurting real updates. | `aac0b94` |
 | E6 `e6_ratchet` | Recursive compaction ratchet over 16 rounds | Recursive keeps a rule in 2 to 5% of summaries at round 16, source re-summarization 21 to 31%. Lost rules rarely return (7 of 76). Conditional rules are not specially vulnerable. A one-sentence "carry forward standing rules" prompt keeps 93 to 100% at recursive cost. New "distorted" category: rules recast as resolved past events. | `6ed9d63` |
@@ -49,6 +49,7 @@ These are cross-study readings, not pre-registered claims. All rest on one model
 6. **Some old-paper claims did not survive.** The anchor prompt did not help goals (E2). The naive self-check failed on Space Bunny but looked fine on Nemotron (X1), so "self-verification is misleading" may be model-specific.
 7. **Full context is not a perfect ceiling, but compaction is not a cure for rot.** Full transcripts lost to compacted or pinned contexts on goals (E2) and rules (E15). E12 shows the cause is distraction by relevant-looking work, not length: neutral filler of the same length caused no loss. Plain compaction helps goals only in shorter sessions and never helps rules; pinning is the arm that is robust at every length.
 8. **Protect content and timing stops mattering.** With a structured prompt and pinned operator messages, every compaction timing policy ties full context (E19). Timing only matters for plain summaries, through whether the active plan happens to still be verbatim; a harness-verified checkpoint helps there, and model-judged timing adds cost without benefit.
+9. **Outcome-graded benchmarks can hide compaction loss.** On stock τ-bench (E3), final-state reward did not move under compaction, because the tools and their descriptions carry the rules. The loss showed up only as process violations (writes without user confirmation) once that redundancy was removed. Moving the Watchpoint evaluation to τ-bench, as planned on 2026-10-01, needs process-level grading or rule-stripped tool descriptions to measure anything.
 
 ## Known issues that cut across studies
 
