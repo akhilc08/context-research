@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E16, E20, and E21 were still running. Their rows say so.
+Status: written while E16, E20, E21, and E22 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -35,6 +35,7 @@ Status: written while E16, E20, and E21 were still running. Their rows say so.
 | E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Timing matters only for plain summaries, and only through whether the current plan is still verbatim (83% next-step correct when it is, 23% when summarized). Checkpoint timing is best there (86% vs threshold 69%, Holm p = 0.07, replicated). Operator-aware timing hurts (43%). Model-judged timing ties the threshold at 4.5x the compaction input. With a structured prompt plus pinned operator messages, every timing ties full context (81 to 83%). | `1881c71` |
 | E20 `e20_revocation_format` | How to represent revoked and amended rules in a pinned rule block (omit, quote, permission phrasing, REVOKED label, struck raw turns) | Running. | |
 | E21 `e21_combined_recipe` | Held-out validation of the combined recipe (structured provenance prompt, in-order operator pin with revocations struck, versioned facts, safe plan note, checkpoint timing) on fresh mixed sessions, with ablations | Running. | |
+| E22 `e22_taubench_process` | Confirmatory process-graded τ-bench (retail and airline, policy stripped from tool descriptions, deterministic violation detectors, 2 trials) | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
 ## What the night suggests
