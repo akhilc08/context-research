@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: final for the overnight run, which ended at about 13:00 on 2026-10-02. E23, E24, and E25 were stopped before producing results. Their rows say so.
+Status: final for the overnight run, which ended at about 12:30 on 2026-10-02. E23, E24, and E25 were stopped before producing results. Their rows say so.
 
 ## Setup shared by every study
 
