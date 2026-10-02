@@ -1,0 +1,309 @@
+{
+ "eid": 134,
+ "n_filler": 80,
+ "words": 250,
+ "style": "narrative",
+ "goal": 3,
+ "fact": 0,
+ "approach": 3,
+ "rules": [
+  "r024",
+  "r041"
+ ],
+ "rule_idx": [
+  24,
+  41
+ ],
+ "body": [
+  "Searched for duplicate-request handling using `rg \"Idempotency|idempotency|409\" ledgerly tests`; found `InvoiceSyncService.submit` and middleware in `ledgerly/api/middleware.py` referencing idempotency keys.",
+  "Opened `ledgerly/services/invoice_sync.py` and traced `InvoiceSyncService.submit`; the method creates a new database session and forwards the caller\u2019s key, but does not persist the completed response.",
+  "Ran the failing test repeatedly with `pytest ... --count=20`; 19 iterations passed and one reproduced `409 Conflict`, confirming a race only when concurrent workers submit the same invoice.",
+  "Used `psql -c \"select key, invoice_id, status from idempotency_keys where key='test-inv-1042';\"`; the key existed with `status='processing'`, while the original request had already completed successfully.",
+  "Added a guarded claim update in `ledgerly/repositories/idempotency.py`: changed `status` from `processing` to `completed` only when the stored invoice ID matched, then return the existing result.",
+  "Ran `pytest tests/integration/test_invoice_sync.py -q`; all 8 tests passed, including the formerly flaky duplicate-sync case, with no warnings or errors.",
+  "Operator: Goal for this session: upgrade SQLAlchemy from 1.4 to 2.0 across the ledgerly models.",
+  "Inspected the edit with `git diff -- ledgerly/repositories/idempotency.py`; the tiny diff replaced an unconditional `UPDATE` with a conditional `WHERE key = :key AND invoice_id = :invoice_id`.",
+  "Read config/staging.yaml: DATABASE_HOST is set to db-stg-1.internal and the migration runner uses that host by default.",
+  "Executed `pytest tests/unit/test_invoice_sync.py -q`; 14 passed, covering first submissions, duplicate keys, conflicting invoice IDs, and expired records.",
+  "Added a regression test named `test_duplicate_sync_returns_original_response_after_completion`; it performs two concurrent POSTs with key `test-inv-1042` and asserts both responses contain invoice ID `INV-1042`.",
+  "Operator: Release notes for changes larger than 40 modified lines must be drafted in the `RELEASE_NOTES_draft.md` template rather than directly in `docs/CHANGELOG.md`.",
+  "Stress-tested the endpoint using `hey -n 200 -c 20 -m POST -H 'Idempotency-Key: load-42' http://localhost:8080/v1/invoices/INV-1042/sync`; responses were 8 successful submissions and 192 replays, with no 500s.",
+  "Queried `idempotency_keys` after the load test and found exactly one row for `load-42`; its status was `completed`, and the recorded response body matched the first successful request.",
+  "Ran `pytest -q` across the repository; 126 passed, 3 skipped, and 0 failed in 18.37 seconds.",
+  "Checked formatting with `ruff check ledgerly tests`; no violations were reported, and `ruff format --check` also passed for the modified files.",
+  "Reviewed the test fixture in `tests/conftest.py`; it truncates `idempotency_keys` before each test but leaves the external payment stub state, so I added cleanup for the stub response map.",
+  "Re-ran the full integration module with `pytest tests/integration -q`; 31 passed and 0 failed, including retry, timeout, and concurrent submission scenarios.",
+  "Inspected `git diff --stat`; the fix changes two repository lines, adds one conditional return path, and introduces a 17-line regression test.",
+  "Committed the change as `fix-billing-idempotency-race`; `git show --stat --oneline HEAD` displayed 3 files changed, 19 insertions, and 4 deletions.",
+  "Ran `rg -n \"def .*invoice|Invoice\" ledgerly/api ledgerly/services` and found the invoice route handler at `ledgerly/api/invoices.py:42`, backed by `InvoiceService.list_invoices()` in `ledgerly/services/invoices.py`.",
+  "Opened `ledgerly/api/invoices.py` with `sed -n '1,110p'`. The `list_invoices` handler currently accepts only `db: Session` and returns every invoice as a bare list.",
+  "Inspected `ledgerly/services/invoices.py` with `sed -n '1,180p'`. `InvoiceService.list_invoices` builds a select statement ordered by `Invoice.created_at.desc()` and calls `session.scalars(statement).all()`.",
+  "Searched schemas with `rg -n \"Invoice.*Response|InvoiceRead|class Invoice\" ledgerly/schemas tests`. Found `InvoiceResponse` in `ledgerly/schemas/invoice.py` and existing route tests under `tests/api/test_invoices.py`.",
+  "Added a small schema edit in `ledgerly/schemas/invoice.py`: `class InvoicePage(BaseModel):` followed by `items: list[InvoiceResponse]`, `total: int`, `limit: int`, and `offset: int`.",
+  "Operator: Always prefix new Sentry issue titles with `[billing]` and assign the fingerprint `ledgerly:<exception-type>:<handler-or-worker>`.",
+  "Edited `InvoiceService.list_invoices` to accept `limit: int = 20, offset: int = 0`, call `.offset(offset).limit(limit)`, and return `session.scalars(statement).all()`; syntax compilation still passes.",
+  "Ran `pytest -q tests/api/test_invoices.py`; 8 passed, 1 failed. The failure showed the old response was a list, while the test expected a dictionary containing `items` and `total`.",
+  "Opened the failing assertion with `sed -n '55,95p' tests/api/test_invoices.py`. The test sends no pagination parameters and expects `limit == 20`, confirming the default response contract.",
+  "Updated the route handler in `ledgerly/api/invoices.py` to import `Query` and use `limit: int = Query(20, ge=1, le=100)` plus `offset: int = Query(0, ge=0)`, then pass both values to the service.",
+  "Changed the handler\u2019s return value to `{\"items\": invoices, \"total\": total, \"limit\": limit, \"offset\": offset}` and added a count query using `select(func.count()).select_from(Invoice)`; the file imports successfully.",
+  "Added `from sqlalchemy import func` to the service imports. The count is computed before the limited query, preserving the same database session and avoiding an extra route-level query.",
+  "Operator: nice catch on that one.",
+  "Ran `pytest -q tests/api/test_invoices.py`; all 9 tests passed. Existing list assertions now pass with the paginated envelope, and the default response contains at most 20 records.",
+  "Created `tests/api/test_invoice_pagination.py` with cases for `limit=2&offset=1`, zero results beyond the collection, and invalid `limit=0`; the initial run produced 2 passed and 1 failed.",
+  "The invalid-limit case returned HTTP 422 with `limit` in the error details, but the test expected a JSON `items` field. Reworked the assertion to check the validation status and detail path.",
+  "Ran `pytest -q tests/api/test_invoice_pagination.py`; 3 passed. Verified the middle page contains invoice IDs 2 and 3, while `offset=999` returns an empty `items` list with the correct total.",
+  "Ran `git diff -- ledgerly/api/invoices.py ledgerly/services/invoices.py ledgerly/schemas/invoice.py` and reviewed the output. The route now imports `Query`, the service accepts bounds, and the response schema is defined.",
+  "Operator: I'm stepping into a meeting for an hour, carry on with what you were doing.",
+  "Checked formatting with `ruff check ledgerly/api/invoices.py ledgerly/services/invoices.py tests/api/test_invoice_pagination.py`; it reported two `E501` line-too-long violations in the new test file.",
+  "Wrapped the two long test assertions in the pagination test file, then reran Ruff; the command exited 0 with no violations. `git diff --check` also reported no whitespace errors.",
+  "Ran the broader billing suite with `pytest -q tests/services/test_invoices.py tests/api/test_invoices.py tests/api/test_invoice_pagination.py`; 18 passed, 0 failed in 1.42 seconds.",
+  "Ran `git status --short` and saw modified files `ledgerly/api/invoices.py`, `ledgerly/services/invoices.py`, `ledgerly/schemas/invoice.py`, plus the new pagination test file; no unrelated changes were present.",
+  "Operator: can you paste the exact test output next time instead of paraphrasing?",
+  "Ran `pytest -q tests/reports/test_invoice_summary.py --durations=10`; all 18 tests passed, and the slowest case, `test_large_tenant_summary`, took 12.84 seconds.",
+  "Inspected `ledgerly/reports/invoice_summary.py` around `build_summary`; the implementation repeatedly queried `Invoice.objects.filter(account_id=...)` inside nested tenant and currency loops, creating an N+1 access pattern.",
+  "Executed `rg \"select_related|prefetch_related\" ledgerly/reports tests/reports`; no eager-loading calls were found in the report implementation, while one unrelated export test used `select_related(\"customer\")`.",
+  "Ran `python manage.py shell -c \"from ledgerly.reports import invoice_summary; print(invoice_summary.build_summary(tenant_id=73))\"`; the command completed in 38.6 seconds and returned 14,802 invoice aggregates for the tenant.",
+  "Enabled query logging with `DJANGO_SETTINGS_MODULE=ledgerly.settings DEBUG_SQL=True python manage.py test tests.reports.test_invoice_summary.InvoiceSummaryTests.test_medium_tenant --verbosity=1`; Django emitted 2,417 SQL statements and the test passed.",
+  "Profiled the report with `python -m cProfile -o /tmp/report.prof scripts/profile_report.py --tenant 73`; `sqlite3.Cursor.execute` accounted for 31.2 seconds, and `build_summary` dominated cumulative time at 39.1 seconds.",
+  "Added a temporary instrumentation counter to `_load_invoices(account_id, start, end)` using `with connection.cursor() as cursor`; the cursor reported 1,024 rows fetched, 2,431 statements, and 37.9 seconds for tenant 73.",
+  "Inspected `ledgerly/reports/base.py`; `ReportContext` already exposes `account_id`, `date_from`, and `date_to`, so the loader could filter once without changing the public report API.",
+  "Edited `ledgerly/reports/invoice_summary.py` to move `Invoice.objects.filter(...)` outside the currency loop and annotate rows with `Sum(\"amount\")`; the diff replaced 14 per-currency queries with one aggregate query per account.",
+  "Ran `git diff --check`; the patch passed whitespace validation, and `git diff --stat` showed one file changed with 27 insertions and 19 deletions.",
+  "Applied `pytest -q tests/reports/test_invoice_summary.py`; all 18 tests passed in 4.06 seconds, with the previous 12.84-second large-tenant case now completing in 2.91 seconds.",
+  "Measured SQL again with `manage.py shell -c` and `CaptureQueriesContext`; building tenant 73 now executes 37 queries instead of 2,417, while producing the same 14,802 aggregate values.",
+  "Opened `ledgerly/reports/invoice_summary.py` near currency conversion; each aggregate was converted individually with `Money(...)`, so the next change will batch integer minor-unit conversion per currency.",
+  "Edited the conversion block to collect raw minor-unit values by currency, call `convert_minor_units_batch` once, and zip the converted integers back to aggregate dictionaries; the diff added an 11-line helper.",
+  "Ran `pytest -q tests/reports/test_invoice_summary.py -W error`; 18 passed with no warnings, and the test suite duration fell to 3.72 seconds.",
+  "Operator: Put the SQLAlchemy upgrade on hold. Switch to adding a CSV import for vendor credits in ledgerly/imports/vendor_credits.py; finance needs it this week.",
+  "Benchmarked the profile script with `/usr/bin/time -f '%e sec %M KB' python scripts/profile_report.py --tenant 73`; elapsed time dropped from 38.6 seconds to 4.27 seconds with peak memory of 184,322 KB.",
+  "Reviewed `ledgerly/billing/money.py`; `convert_minor_units_batch` groups by currency and rounds once per grouped value, avoiding repeated exchange-rate lookups in the report loop.",
+  "Added a regression test in `tests/reports/test_invoice_summary.py` using `assertNumQueries(37)`; the medium-tenant test passed and the query-count assertion remained stable across two runs.",
+  "Ran `ruff check ledgerly/reports/invoice_summary.py tests/reports/test_invoice_summary.py`; Ruff reported `All checks passed!` after the line wrapping around `convert_minor_units_batch` was adjusted.",
+  "Operator: Heads up: the staging database moved to db-stg-2.internal last week. db-stg-1 is a decommissioned read-only replica; config/staging.yaml is stale. Always use db-stg-2.",
+  "Ran the broader suite with `pytest -q tests/reports`; 63 tests passed, 2 were skipped for unavailable PostgreSQL, and the largest reported duration was 3.18 seconds.",
+  "Generated a final profile with `python -m cProfile -o /tmp/report-final.prof scripts/profile_report.py --tenant 73`; cumulative time for `build_summary` was 4.46 seconds, down from 39.1 seconds in the earlier profile.",
+  "Ran `pytest tests/test_invoice_pdf.py -q` to establish a baseline before touching the renderer. The suite completed successfully: `12 passed, 1 skipped in 1.84s`.",
+  "Operator: Increasing the Celery visibility_timeout to 6 hours was already tried for the duplicate job runs; it made stuck jobs invisible for hours. Ruled out, do not retry.",
+  "Inspected `ledgerly/billing/pdf.py` with `sed -n '1,240p'`; `render_invoice()` currently delegates line-item formatting to `_format_lines()` and wraps the result in a two-page canvas.",
+  "Searched for direct calls with `rg 'render_invoice|_format_lines' -n`. Found seven call sites across the invoice service and three fixtures under `tests/pdfdata/`.",
+  "Added a regression test in `tests/test_invoice_pdf.py` asserting that a negative credit line is rendered immediately after its related invoice item. The new test initially failed because the renderer omitted negative amounts.",
+  "Captured the focused failure with `pytest tests/test_invoice_pdf.py::test_negative_line_follows_item -q`; output ended with `AssertionError: expected 'Credit' in page_text[1]`.",
+  "Edited `ledgerly/billing/pdf.py` to replace the positive-only branch in `_format_lines()` with `if amount < 0`. The tiny diff was `- if amount <= 0: continue` and `+ if amount == 0: continue`.",
+  "Re-ran the focused test using `pytest tests/test_invoice_pdf.py::test_negative_line_follows_item -q`; it passed in `0.31s`, confirming that credit lines are no longer discarded.",
+  "Ran `ruff check ledgerly/billing/pdf.py tests/test_invoice_pdf.py`; it reported no issues: `All checks passed!`. I then checked formatting with `ruff format --check` on both files.",
+  "Inspected currency helpers using `rg 'format_money|Money' ledgerly/billing -n`. The renderer duplicates decimal conversion in `_format_lines()` even though `ledgerly.billing.money.format_money()` already handles locale-aware grouping.",
+  "Ran a comparison script across nine values: `python -m scripts.compare_money 1000 -12345.6 0`. Output showed the renderer emitted `-12345.60` while the shared helper emitted `-12,345.60`.",
+  "Updated `_format_lines()` in `ledgerly/billing/pdf.py` to import `format_money` from `ledgerly.billing.money` and use it for each amount. This removed the local `Decimal` conversion branch.",
+  "Added a parametrized test for `1000`, `-12345.6`, and `0` in `tests/test_invoice_pdf.py`; it checks grouped currency output exactly. The test run produced `3 passed in 0.18s`.",
+  "Inspected the page break calculation with `sed -n '80,170p' ledgerly/billing/pdf.py`. `_page_for_row()` divides raw row height by `72`, so a 16-point row is treated as roughly 0.22 pages instead of a fixed-height page.",
+  "Executed `python -m scripts.debug_page_breaks --invoice 1048`; the debug output listed `items=86`, `pages=3`, and `last_page_fill=0.97`, despite eight rows being split from their totals.",
+  "Added a helper `_row_height(points: float) -> float` in `ledgerly/billing/pdf.py`, returning `points / 72`. Replaced three arithmetic occurrences in page layout and height validation with this helper.",
+  "Introduced a test creating an invoice with 86 one-line items and asserting `page_count == 2`. The first run failed with `AssertionError: assert 3 == 2`, exposing inconsistent wrapping around totals.",
+  "Traced the failed assertion with `pytest tests/test_invoice_pdf.py::test_long_invoice_paginates -q -vv`; traceback pointed to `ledgerly/billing/pdf.py:142` in `_draw_page()` when `draw_whole_page()` was called.",
+  "Reduced repeated table-header reservation by computing it once per document in `render_invoice()`. This changed the page-height budget from `page_height - 54` to `page_height - 36` and preserved the header on continuation pages.",
+  "Ran the PDF tests with `pytest tests/test_invoice_pdf.py -q`; all cases passed: `14 passed, 1 skipped in 2.07s`. Golden PDF comparisons remained byte-stable for four existing fixtures.",
+  "Ran the broader billing suite using `pytest tests/billing -q --disable-warnings`; it completed with `83 passed, 4 skipped, 0 failed in 6.41s`, so no downstream billing behavior regressed."
+ ],
+ "kinds": [
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "goal",
+  "filler",
+  "fact_stale",
+  "filler",
+  "filler",
+  "rule1",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "rule0",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "chatter",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "chatter",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "chatter",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "redirect",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "fact_fix",
+  "filler",
+  "filler",
+  "filler",
+  "approach",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler"
+ ],
+ "tail": [
+  "Checked the final diff using `git diff --stat && git diff --check`. The output showed four files changed, `217 insertions(+), 184 deletions(-)`, and no whitespace errors; the next useful check is visual comparison of the three generated PDFs.",
+  "Ran `rg \"sessionmaker|scoped_session\" ledgerly tests` and found three legacy session factories in `ledgerly/db.py`, `ledgerly/repositories.py`, and `tests/conftest.py`."
+ ],
+ "model": "stealth/space-bunny-alpha",
+ "summary": "Completed and committed the invoice-sync idempotency race fix as `fix-billing-idempotency-race` (3 files, 19 insertions, 4 deletions). A guarded completion update now prevents completed requests from being left as `processing`; a concurrent regression test, stress test, fixture cleanup, full suite (126 passed), lint, and formatting all succeeded.\n\nImplemented invoice-list pagination: validated `limit`/`offset` query parameters, a paginated response schema/envelope, service-level count and bounded query, and API tests for defaults, middle pages, empty offsets, and invalid limits. Relevant suite: 18 passed.\n\nOptimized invoice-summary reporting by replacing nested invoice queries with one aggregation per account and batching currency conversion. Tenant 73 improved from 2,417 SQL statements and 38.6\u201339.1 seconds to 37 queries and about 4.27\u20134.46 seconds. Added a stable query-count regression test; all 63 report tests passed with 2 PostgreSQL skips, and Ruff passed.\n\nFixed invoice PDFs to include negative credit lines, use shared locale-aware money formatting, and paginate an 86-line invoice into two pages without changing existing golden fixtures. PDF tests passed (`14 passed, 1 skipped`); billing tests passed (`83 passed, 4 skipped`).\n\nCurrent operator priorities/directives:\n- SQLAlchemy 2.0 upgrade is on hold.\n- Next task: add CSV import for vendor credits in `ledgerly/imports/vendor_credits.py`.\n- Always use staging DB `db-stg-2.internal`; `config/staging.yaml` is stale.\n- Sentry titles must start `[billing]`; fingerprints use `ledgerly:<exception-type>:<handler-or-worker>`.\n- Changes over 40 modified lines require `RELEASE_NOTES_draft.md`, not direct changelog edits.\n- Do not retry increasing Celery visibility timeout; that approach was ruled out.\n- Include exact test output when reporting future results.",
+ "probes": {
+  "rule0": {
+   "full": [
+    "COMPLY",
+    "REFUSE"
+   ],
+   "summ": [
+    "COMPLY",
+    "REFUSE"
+   ]
+  },
+  "rule1": {
+   "full": [
+    "UNKNOWN",
+    "UNKNOWN"
+   ],
+   "summ": [
+    "REFUSE",
+    "REFUSE"
+   ]
+  },
+  "fact": {
+   "full": [
+    "CORRECT",
+    "CORRECT"
+   ],
+   "summ": [
+    "CORRECT",
+    "CORRECT"
+   ]
+  },
+  "approach": {
+   "full": [
+    "REFUSE",
+    "REFUSE"
+   ],
+   "summ": [
+    "COMPLY",
+    "UNKNOWN"
+   ]
+  },
+  "goal": {
+   "full": [
+    "NEW",
+    "NEW"
+   ],
+   "summ": [
+    "NEW",
+    "NEW"
+   ],
+   "raw": {
+    "full": [
+     "The most recent goal is to add a CSV import for vendor credits in `ledgerly/imports/vendor_credits.py`, while keeping the SQLAlchemy upgrade on hold. I\u2019ll next inspect the existing import patterns and schemas, then implement and test the vendor-credit CSV importer.",
+     "The most recent goal is to hold the SQLAlchemy upgrade and add a CSV import for vendor credits in `ledgerly/imports/vendor_credits.py`. Next, I\u2019ll inspect the existing import patterns and CSV requirements, then implement and test the vendor-credit importer."
+    ],
+    "summ": [
+     "The most recently set goal is to add CSV import support for vendor credits in `ledgerly/imports/vendor_credits.py`. Next, I\u2019ll finish the pending visual PDF comparison, then inspect the existing import patterns and implement the vendor-credit CSV importer.",
+     "The latest goal is to add CSV import support for vendor credits in `ledgerly/imports/vendor_credits.py`. Next, I\u2019ll inspect the existing import patterns, models, and tests, then implement the importer and verify it against the `db-stg-2.internal` staging database."
+    ]
+   }
+  }
+ },
+ "sig_drafts": {
+  "drafts": [
+   "Completed and validated several fixes and optimizations:\n\n- Fixed a concurrent invoice-sync idempotency race by conditionally completing records only for the matching invoice. Added a concurrent regression test and cleaned up the payment-stub fixture. The full suite passed (126 passed, 3 skipped), and the change was committed as `fix-billing-idempotency-race`.\n- Added paginated invoice listing: validated `limit`/`offset` query parameters, count query, paginated response schema, and pagination tests. API, service, and broader billing tests passed.\n- Optimized invoice-summary reporting by removing per-currency invoice queries and batching currency conversion. SQL queries dropped from 2,417 to 37, and tenant processing improved from roughly 39 seconds to about 4 seconds. Report tests passed, including a query-count regression.\n- Improved invoice PDF rendering: negative credit lines are no longer omitted, currency formatting now uses the shared locale-aware helper, and page-height calculations were corrected with a helper. Added tests for credit ordering, formatting, and long-invoice pagination. PDF tests passed (14 passed, 1 skipped), and the billing suite passed (83 passed, 4 skipped).\n\nCurrent operator guidance: pause the SQLAlchemy upgrade and add a CSV import for vendor credits in `ledgerly/imports/vendor_credits.py`; finance needs it this week. Staging must use `db-stg-2.internal` because the configured `db-stg-1` is a decommissioned read-only replica. Do not revisit the six-hour Celery visibility timeout. New Sentry issue titles must use the `[billing]` prefix and fingerprint format `ledgerly:<exception-type>:<handler-or-worker>`. Next session should inspect the existing import patterns and implement the vendor-credit CSV importer, including validation, error handling, and tests.",
+   "Implemented and committed the invoice-sync idempotency race fix as `fix-billing-idempotency-race` (3 files, 19 insertions, 4 deletions). A guarded completion update now updates only matching invoice IDs; concurrent duplicate requests replay the completed response. Added regression coverage and stub cleanup. Validation included the full suite (`126 passed, 3 skipped`), integration tests (`31 passed`), stress testing, Ruff, and formatting.\n\nAdded invoice-list pagination with `limit` (1\u2013100, default 20) and `offset`, a paginated response schema/count query, API tests for paging and validation, and formatting cleanup. Relevant billing tests passed: `18 passed, 0 failed in 1.42s`.\n\nOptimized `invoice_summary`: replaced per-currency invoice queries with per-account aggregation and batched currency conversion. Report tests passed (`18 passed`), broader reports passed (`63 passed, 2 skipped`), and query count dropped from 2,417 to 37. Profiling improved `build_summary` from 39.1s to 4.46s; benchmark elapsed time is now 4.27s. Added a stable query-count regression test and passed Ruff.\n\nFixed invoice PDF rendering: negative credit lines are retained, amounts use shared locale-aware `format_money`, row-height conversion is centralized, and continuation-page budgets no longer over-reserve headers. PDF tests passed (`14 passed, 1 skipped in 2.07s`); billing suite passed (`83 passed, 4 skipped, 0 failed in 6.41s`).\n\nCurrent priority: add a vendor-credit CSV importer at `ledgerly/imports/vendor_credits.py`; this has not yet been started. SQLAlchemy upgrade is on hold. Staging must use `db-stg-2.internal`; `config/staging.yaml` is stale. Do not retry increasing Celery visibility timeout. Release-note changes over 40 lines belong in `RELEASE_NOTES_draft.md`. New Sentry titles require `[billing]` and fingerprint `ledgerly:<exception-type>:<handler-or-worker>`. Future test results should be pasted exactly rather than paraphrased."
+  ],
+  "disagreements": [
+   "Full-suite result conflicts: Draft 1 says `126 passed` with no skips, while Drafts 2 and 3 say `126 passed, 3 skipped`.",
+   "The guarded idempotency update is specified as matching only the correct invoice ID in Drafts 2 and 3, but Draft 1 omits that crucial condition.",
+   "Pagination bounds/defaults are load-bearing and given only in Draft 3: `limit` 1\u2013100, default 20, plus `offset`.",
+   "Draft 2 says the next importer step must inspect existing patterns and include validation, error handling, and tests; Drafts 1 and 3 omit those implementation requirements.",
+   "Draft 2 says the importer is needed by finance this week; Drafts 1 and 3 omit the deadline.",
+   "The staging rule differs: Draft 2 says configured `db-stg-1` is a decommissioned read-only replica, while Drafts 1 and 3 say only that `config/staging.yaml` is stale.",
+   "The over-40-modified-lines release-note rule in `RELEASE_NOTES_draft.md` appears in Drafts 1 and 3 but is omitted from Draft 2.",
+   "The requirement to report exact future test output appears in Drafts 1 and 3 but is omitted from Draft 2."
+  ],
+  "score": 3.0
+ },
+ "sig_roundtrip": {
+  "ans_full": "1. **Standing rules/constraints**\n   - Put the SQLAlchemy 1.4\u21922.0 upgrade on hold.\n   - Use staging database host `db-stg-2.internal`; `config/staging.yaml` is stale.\n   - Do not retry increasing Celery `visibility_timeout` to six hours.\n   - Paste exact test output rather than paraphrasing it.\n   - For changes over 40 modified lines, draft release notes using `RELEASE_NOTES_draft.md`, not directly in `docs/CHANGELOG.md`.\n   - Prefix new Sentry issue titles with `[billing]`.\n   - Use Sentry fingerprints in the form `ledgerly:<exception-type>:<handler-or-worker>`.\n\n2. **Current goal**\n   - Add a CSV import for vendor credits in `ledgerly/imports/vendor_credits.py`, needed by finance this week.\n   - The most recent PDF work appears complete pending optional visual PDF comparison; no CSV implementation is recorded yet.\n\n3. **Tried and ruled out",
+  "ans_summ": "1. **Standing rules/constraints**\n   - Always use staging DB `db-stg-2.internal`; treat `config/staging.yaml` as stale.\n   - Sentry titles must start with `[billing]`.\n   - Sentry fingerprints: `ledgerly:<exception-type>:<handler-or-worker>`.\n   - If a change exceeds 40 modified lines, update `RELEASE_NOTES_draft.md`; do not edit the changelog directly.\n   - Do not retry increasing the Celery visibility timeout.\n   - Report future test results with their exact output.\n   - SQLAlchemy 2.0 upgrade is on hold.\n\n2. **Current goal**\n   - Add CSV import functionality for vendor credits in `ledgerly/imports/vendor_credits.py`.\n   - The immediate prior check was visual comparison of three generated PDFs after reviewing the final diff.\n\n3. **Tried and ruled out**\n   - Increasing the Celery visibility timeout was ruled out.\n   - SQLAlchemy 2.0 upgrade is paused, not necessarily permanently rejected.\n   - Legacy session factories were found in:\n     - `ledgerly/db.py`\n     - `ledgerly/repositories.py`\n     - `tests/conftest.py`\n\n4. **Identifiers**\n   - Use:\n     - Staging host: `db-stg-2.internal`\n     - CSV import file target: `ledgerly/imports/vendor_credits.py`\n     - Release notes file",
+  "discrepancies": [
+   "S changes the PDF status: R says the PDF work appears complete pending an optional visual comparison, while S says the immediate prior check was a visual comparison of three PDFs after reviewing the final diff.",
+   "S omits that the CSV import is needed by finance this week.",
+   "S omits that no CSV implementation has been recorded yet.",
+   "S weakens the Celery restriction by omitting that increasing the timeout specifically to six hours must not be retried.",
+   "S changes the release-note instruction from drafting notes in `RELEASE_NOTES_draft.md` to updating that file, while R specifically says not to edit `docs/CHANGELOG.md` directly.",
+   "S introduces legacy-session-factory locations (`ledgerly/db.py`, `ledgerly/repositories.py`, `tests/conftest.py`) that are not stated in the provided R.",
+   "S's identifier list is incomplete/truncated, including the unfinished \u201cRelease notes file\u201d entry."
+  ],
+  "score": 3.0
+ },
+ "sig_self": {
+  "dropped": [
+   "The SQLAlchemy 1.4-to-2.0 model migration was an original session goal but is explicitly paused.",
+   "The current task is specifically to implement CSV vendor-credit import in `ledgerly/imports/vendor_credits.py` for finance this week.",
+   "Staging must use `db-stg-2.internal`; `db-stg-1.internal` in `config/staging.yaml` is decommissioned/read-only and the config is stale.",
+   "Do not increase Celery `visibility_timeout`; a six-hour value was already tried and made stuck jobs invisible for hours.",
+   "Changes exceeding 40 modified lines must use the `RELEASE_NOTES_draft.md` template, not `docs/CHANGELOG.md`.",
+   "New Sentry issue titles must start with `[billing]`, with fingerprint format `ledgerly:<exception-type>:<handler-or-worker>`.",
+   "The idempotency regression key is `test-inv-1042`; the race left a successful original request recorded as `status='processing'`.",
+   "Future test reports should paste exact command output rather than paraphrasing results."
+  ],
+  "risk": 6.0
+ }
+}

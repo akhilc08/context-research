@@ -1,0 +1,308 @@
+{
+ "eid": 206,
+ "n_filler": 80,
+ "words": 250,
+ "style": "narrative",
+ "goal": 4,
+ "fact": 3,
+ "approach": 4,
+ "rules": [
+  "r028",
+  "r021"
+ ],
+ "rule_idx": [
+  28,
+  21
+ ],
+ "body": [
+  "Ran `pytest -q tests/search/test_index.py` to establish a baseline for the current indexing behavior. The run completed with 18 passed and 2 failed, with failures reporting that rebuilt documents missed recently updated invoice descriptions.",
+  "Inspected `ledgerly/search/index.py` and `ledgerly/search/rebuilder.py` with `sed`. Found rebuilds queried invoices one page at a time, then serialized each document through the embedding client, creating a likely latency bottleneck.",
+  "Added a timing log around the invoice scan in `ledgerly/search/rebuilder.py`; the diff wrapped the loop with `elapsed = time.perf_counter()` and logged `scanned=%d elapsed=%.3f`. A local scan of 5,000 invoices took 8.42 seconds.",
+  "Replaced the per-invoice embedding call with a bounded concurrent request helper in `ledgerly/search/rebuilder.py`. The new `embed_documents` function uses a `ThreadPoolExecutor(max_workers=8)` and preserves input ordering, reducing the 5,000-document rebuild run to 3.16 seconds.",
+  "Ran `pytest -q tests/search/test_rebuilder.py`; 14 tests passed and 1 failed. The failure showed a mocked embedding client expected exactly 25 requests, while the new batching path issued one request for 100 documents.",
+  "Adjusted the mock client in `tests/search/test_rebuilder.py` to support batch payloads. The smallest edit added `def embed(self, texts):` and returned a deterministic vector for every item. The targeted suite then reported 15 passed.",
+  "Profiled the rebuild command with `python -m cProfile -o /tmp/rebuild.prof scripts/rebuild_search.py --tenant demo`. The top cumulative entry was `ledgerly.embedding.EmbeddingClient.embed`, accounting for 2.91 seconds across 125 calls.",
+  "Introduced request chunking in `ledgerly/search/rebuilder.py` with `CHUNK_SIZE = 100`. The diff split the document list using `for start in range(0, len(documents), CHUNK_SIZE):`. The profiling run fell to 1.87 seconds for 5,000 invoices.",
+  "Executed `pytest -q tests/search/test_index.py tests/search/test_rebuilder.py` after the chunking change. All 33 tests passed, including the pagination, deletion, and ordering cases, confirming that chunk boundaries did not alter the resulting index.",
+  "Inspected the database query with `EXPLAIN ANALYZE SELECT ... FROM invoices WHERE tenant_id = $1 ORDER BY updated_at DESC`. PostgreSQL reported a sequential scan over 184,221 rows and chose an existing `invoices_tenant_updated_idx` index when the tenant predicate was present.",
+  "Added tenant scoping to the scan builder in `ledgerly/search/rebuilder.py`; the diff replaced a tenant-less query with `Invoice.for_tenant(self.tenant_id)`. The test database scan decreased from 8.42 seconds to 1.24 seconds.",
+  "Read docs/ops.md: the sandbox payments API base URL is https://sbx-pay-a.ledgerly.dev.",
+  "Operator: Goal for this session: add OpenTelemetry tracing spans around the invoice sync worker.",
+  "Ran `python scripts/rebuild_search.py --tenant demo --dry-run --limit 5000`. The command printed `documents=5000 embedded=5000 indexed=5000 elapsed=1.19s`, showing that embedding and upsert costs were now balanced across the pipeline stages.",
+  "Searched for other direct index rebuild entry points with `rg \"rebuild|index_documents\" ledgerly tests`. Found `ledgerly/management/commands/rebuild_search.py`, `ledgerly/search/rebuilder.py`, and one tenant migration helper that still instantiated the old per-document client.",
+  "Updated `ledgerly/management/commands/rebuild_search.py` to pass the shared `EmbeddingClient` into `SearchIndexRebuilder`. The constructor call changed from `SearchIndexRebuilder(tenant_id=tenant_id)` to `SearchIndexRebuilder(tenant_id=tenant_id, embedder=embedder)`.",
+  "Ran `pytest -q tests/management/test_rebuild_search.py`; 9 tests passed. The command-level test verified dry-run output, tenant filtering, and that the management command no longer creates a separate embedding client per invocation.",
+  "Compared vector counts before and after a rebuild using `psql -c \"SELECT count(*) FROM search_vectors WHERE tenant_id='demo';\"`. The result was `count=5000`, matching the 5,000 invoices returned by the tenant-scoped scan and eliminating duplicate upserts.",
+  "Inspected `ledgerly/search/storage.py` and found each vector upsert opened a database transaction independently. Added a `bulk_upsert` method that iterates rows inside one `session.begin()` block and calls `execute(stmt)` for each vector.",
+  "Ran `pytest -q tests/search/test_storage.py`; 11 tests passed and 1 failed because the test database lacked the newly referenced `search_vectors_tenant_document_idx` index. The failure occurred during fixture setup, not during vector insertion.",
+  "Operator: Adding a covering index on invoices(customer_id, created_at) was tried for the slow report; it doubled write latency on the ingest path. Ruled out.",
+  "Added the missing index migration in `ledgerly/db/migrations/0042_add_search_vector_tenant_document.py`. The operation created a unique index on `(tenant_id, document_id)` using `op.create_index(..., unique=True)`, and the storage suite subsequently passed 12 tests.",
+  "Executed `pytest -q` for the full service. The suite finished with 247 passed, 4 skipped, and 0 failed, covering billing, invoices, subscriptions, search indexing, and management commands after the rebuild changes.",
+  "Ran `python scripts/benchmark_rebuild.py --tenant demo --documents 10000 --repeat 3`. The benchmark printed `median=2.41s p95=2.88s vectors=10000`; a local comparison against the previous implementation recorded `median=16.73s`.",
+  "Ran `pytest tests/test_csv_export.py -q` in the ledgerly repository to reproduce the encoding failure; the suite reported `1 failed, 6 passed`, with the customer export test comparing UTF-8 bytes against an incorrectly decoded string.",
+  "Inspected `ledgerly/exporters/csv_export.py` with `sed -n '1,240p'`; the exporter opened report files using the platform default encoding, and the `write_rows()` function contained no explicit `encoding` argument.",
+  "Operator: nice catch on that one.",
+  "Searched for CSV-related file opens with `rg -n \"open\\(|encoding\" ledgerly/exporters tests/test_csv_export.py`; the results identified three exporters, but only `write_rows()` handled the new billing report output.",
+  "Edited `ledgerly/exporters/csv_export.py` to add `encoding=\"utf-8\"` to the `open()` call in `write_rows()`, changing `open(path, \"w\", newline=\"\")` to `open(path, \"w\", encoding=\"utf-8\", newline=\"\")`.",
+  "Reran `pytest tests/test_csv_export.py -q`; all seven tests passed, including `test_customer_names_remain_utf8`, which verified the \u00e9 and \u6771\u4eac characters after decoding with UTF-8.",
+  "Checked the generated file with `file -bi /tmp/ledgerly/customers.csv`; the command returned `text/csv; charset=utf-8`, confirming that the corrected exporter no longer used the host locale encoding.",
+  "Ran `git diff -- ledgerly/exporters/csv_export.py`; the abbreviated diff showed one added argument: `+ encoding=\"utf-8\",` inside the report writer, with no unrelated modifications in the exporter.",
+  "Operator: Never use `print()` or the standard-library `logging` module in Ledgerly; add events through `structlog` in the owning service module.",
+  "Added a regression case to `tests/test_csv_export.py` that exports a row containing `Zo\u00eb,\u6771\u4eac` and asserts the byte sequence decodes as UTF-8; `pytest` reported `8 passed` for the module.",
+  "Inspected project configuration using `grep -n \"python_requires\\|python =\" pyproject.toml setup.cfg`; the package targets Python 3.9+, so the keyword-only newline handling remains compatible with the supported runtime.",
+  "Ran the broader command `pytest tests/exporters -q`; the exporter suite completed with `24 passed, 0 failed`, covering invoice, subscription, and customer CSV paths after the encoding change.",
+  "Reviewed `ledgerly/io/text_writer.py` and found a separate helper already using `encoding=\"utf-8\"`; its behavior matched the fix in `csv_export.py`, so no second implementation was needed.",
+  "Used `python - <<'PY'` to call `write_rows()` against `/tmp/ledgerly/encoding-check.csv`; printing the first row returned `['name', 'city']` followed by `['Zo\u00eb', '\u6771\u4eac']` without replacement characters.",
+  "Checked the working tree with `git status --short`; it listed only `ledgerly/exporters/csv_export.py` and `tests/test_csv_export.py`, both modified during the focused fix.",
+  "Ran `ruff check ledgerly/exporters/csv_export.py tests/test_csv_export.py`; Ruff emitted no diagnostics and exited successfully, confirming that the added argument and regression test followed project lint rules.",
+  "Executed `git diff --check`; the command produced no output, indicating there were no whitespace errors or malformed lines in either changed file.",
+  "Ran the full test command `pytest -q`; execution finished with `186 passed, 3 skipped` and no failures, showing that explicitly selecting UTF-8 did not disrupt other billing workflows.",
+  "Inspected the failing fixture mentioned by the original test with `sed -n '80,150p' tests/test_csv_export.py`; the fixture decoded the temporary file using `read_text(encoding=\"utf-8\")`, aligning its expectation with the exporter's new behavior.",
+  "Used `git diff --stat` to review scope; the change measured `2 files changed, 9 insertions(+), 2 deletions(-)`, consisting of the encoding fix and its focused UTF-8 regression coverage.",
+  "Ran a manual byte check with `xxd -g 1 -l 64 /tmp/ledgerly/encoding-check.csv`; the hex output included UTF-8 byte sequences for `Zo\u00eb` and `\u6771\u4eac`, with no locale-specific escape bytes.",
+  "Finalized the patch after `pytest -q` and `ruff check` both succeeded; the resulting exporter writes billing CSV files as UTF-8 while preserving existing headers, rows, and newline behavior.",
+  "Inspected the repository with `find ledgerly -maxdepth 3 -type f | sort`; it listed 18 Python files, including `ledgerly/billing/invoices.py`, `ledgerly/billing/ledger.py`, and the existing test suite.",
+  "Operator: Forget the tracing work for now. The tax calculation for Canadian provinces in ledgerly/tax/ca.py is wrong for Quebec (QST); fix that first.",
+  "Read `ledgerly/billing/invoices.py` with `sed -n '1,220p'`; found three untyped helpers, including `build_invoice_lines(items, tax_rate)` and `calculate_totals(lines, discount)`.",
+  "Ran `python -m pytest tests/billing/test_invoices.py -q`; all 12 tests passed, establishing a baseline before applying annotations to the invoice module.",
+  "Edited `ledgerly/billing/invoices.py` to import `Decimal`, `Iterable`, and `TypedDict`, then annotated `LineItem` with explicit string and decimal fields in a small type-only diff.",
+  "Applied a targeted return annotation to `build_invoice_lines` as `-> list[LineItem]`; `python -m compileall -q ledgerly` completed successfully with no output.",
+  "Used `grep -R \"def .*):\" -n ledgerly/billing` to locate remaining unannotated functions; six matches appeared across `invoices.py` and `ledger.py`.",
+  "Annotated `calculate_totals(lines: Iterable[LineItem], discount: Decimal) -> dict[str, Decimal]`; the edit preserved the existing key names `subtotal`, `tax`, `discount_amount`, and `total`.",
+  "Ran `python -m pytest tests/billing/test_invoices.py -q`; 12 passed in 0.31 seconds, confirming the new annotations did not alter invoice calculations.",
+  "Inspected the ledger entry points with `sed -n '1,240p' ledgerly/billing/ledger.py`; `post_entry`, `reverse_entry`, and `account_balance` accepted mixed numeric values without declared types.",
+  "Edited `post_entry` to use `Decimal`, `Account`, and `datetime` annotations, including `amount: Decimal` and `posted_at: datetime | None`; the diff changed signatures only.",
+  "Ran `mypy ledgerly/billing/invoices.py`; reported one error, `Returning Any from function declared to return \"list[LineItem]\"`, at line 74.",
+  "Inspected the flagged code with `nl -ba ledgerly/billing/invoices.py | sed -n '64,82p'`; the helper returned a generator, while its annotation promised a concrete list.",
+  "Changed the return expression to `list(_iter_line_items(items, tax_rate))`; the local generator remains lazy internally, but callers now receive the promised list type.",
+  "Added a `Decimal` conversion around the discount argument in `calculate_totals`; the edit produced `discount_amount = subtotal * Decimal(str(discount))` and retained percentage semantics.",
+  "Executed `python -m pytest tests/billing -q`; 34 passed, 0 failed, with one existing warning about deprecated `datetime.utcnow()` in `ledger.py`.",
+  "Replaced the deprecated timestamp call in `post_entry` with `datetime.now(timezone.utc)`; the diff updated the import and produced timezone-aware ledger timestamps.",
+  "Operator: I'm stepping into a meeting for an hour, carry on with what you were doing.",
+  "Ran `python -m pytest tests/billing -q`; 34 passed in 0.52 seconds, and the previous deprecation warning disappeared.",
+  "Operator: Note that sandbox payments moved to https://sbx-pay-c.ledgerly.dev; sbx-pay-a is shut down and returns stale fixtures. Use sbx-pay-c.",
+  "Used `git diff --stat` and `git diff --check`; the patch touched three files, added 41 lines of annotations, and reported no whitespace errors.",
+  "Ran the full suite with `python -m pytest -q`; 96 passed, 0 failed, 0 skipped. A final `mypy ledgerly/billing` check found no issues in either modified module.",
+  "Ran `pytest -q tests/test_invoice_totals.py` in the ledgerly repository. Four tests passed, but `test_apply_credit_after_refund` failed with an expected Decimal total of `87.50`, while the service returned `90.00`.",
+  "Inspected `src/ledgerly/billing/invoices.py` around `apply_credit`, then searched with `grep -R \"def apply_credit\" -n src tests`. The definition appears at line 188, with related coverage in `tests/test_invoice_totals.py`.",
+  "Read the invoice credit implementation and saw that `CreditMemo.amount` is applied before `refund_total` is deducted from the invoice balance. The ordering likely explains why the returned total remains too high.",
+  "Ran `pytest -q tests/ --durations=10`; the baseline completed in 42.18 seconds with 318 passed, 4 skipped, and the slowest tests in `tests/test_invoices.py` and `tests/test_subscriptions.py`.",
+  "Inspected `tests/conftest.py` and found repeated direct inserts into `organizations`, `customers`, and `invoices`; added a helper named `make_invoice` that accepts amount, currency, status, and organization overrides.",
+  "Edited `tests/conftest.py` to import `InvoiceFactory` and add a `db_session` fixture that rolls back after each test; the diff created `def db_session():` beneath the existing database fixture.",
+  "Ran `pytest -q tests/test_invoices.py`; all 46 tests passed in 3.91 seconds, confirming the new session fixture did not alter invoice creation or rollback behavior.",
+  "Grepped invoice tests for `Invoice.objects.create`; the command returned 27 matches across `test_invoices.py`, `test_payments.py`, and `test_reports.py`, concentrated in helper methods and parametrized cases.",
+  "Operator: Every added Python dependency must include a security-exception.md entry countersigned by @omar before CI may pass.",
+  "Added an `organization_factory` fixture backed by `tests/factories.py`; tests that previously inserted organizations now reuse the fixture, removing 19 repeated organization setup blocks.",
+  "Operator: please keep commits small so review stays easy.",
+  "Replaced a verbose organization setup block in `tests/test_invoices.py` with `organization = organization_factory()`; the targeted file passed 46 of 46 tests in 3.02 seconds.",
+  "Profiled with `pytest --durations=15`; database setup consumed 18.7 seconds, while three invoice tests each exceeded one second because they loaded payment histories independently.",
+  "Added a module-scoped `customer_batch` fixture creating ten customers through `CustomerFactory.build_batch(10)` and persisting them once; the fixture\u2019s dependent tests all passed.",
+  "Ran `pytest -q tests/test_customers.py`; 31 passed, 2 skipped in 1.44 seconds, with no duplicate-key errors after replacing the batch customer fixture.",
+  "Searched for repeated `datetime.now()` setup using `rg 'datetime\\.now|datetime\\.utcnow' tests`; 14 matches appeared, including invoice date calculations and subscription renewal tests.",
+  "Introduced a frozen `clock` fixture returning `2024-03-15T12:00:00Z`; updated the renewal helper in `tests/test_subscriptions.py` and received 52 passed, 3 skipped.",
+  "Added `pytest.fixture` parameters for `organization_factory`, `customer_factory`, and `invoice_factory` in `tests/test_reports.py`; report tests passed 28 of 28 without explicit model imports.",
+  "Ran `pytest -q tests/ --durations=10`; the suite improved to 16.63 seconds with 318 passed and 4 skipped, reducing total runtime by 25.55 seconds from the baseline.",
+  "Measured the test database with `python -m pytest tests/test_payments.py --durations=8`; 63 tests passed in 2.28 seconds, and fixture reuse removed most repeated customer and invoice inserts."
+ ],
+ "kinds": [
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "fact_stale",
+  "goal",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "approach",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "chatter",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "rule1",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "redirect",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "chatter",
+  "filler",
+  "fact_fix",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "rule0",
+  "filler",
+  "chatter",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler",
+  "filler"
+ ],
+ "tail": [
+  "Inspected `tests/factories.py`; `InvoiceFactory` still generated a new organization for every invoice, so I added a `SubFactory(OrganizationFactory)` default while allowing callers to override it.",
+  "Updated the invoice fixture in `tests/conftest.py` to persist organizations through the shared factory; running `tests/test_invoices.py` produced 46 passed in 2.77 seconds."
+ ],
+ "model": "stealth/space-bunny-alpha",
+ "summary": "Optimized Ledgerly search rebuilding: tenant-scoped invoice queries, concurrent embedding with 100-item chunks, shared embedding clients, bulk vector upserts, and a unique `(tenant_id, document_id)` migration. Search, management, storage, and service tests passed; a 10k-vector benchmark improved from a prior median of 16.73s to 2.41s. Fixed CSV exports to explicitly write UTF-8 and added Unicode regression coverage; all tests, Ruff, and whitespace checks passed.\n\nAdded billing type annotations, corrected the invoice-line generator return type and discount conversion, and replaced deprecated UTC timestamp creation. An unresolved credit-after-refund test still returns `90.00` instead of `87.50`; investigation indicates credit is applied before refund deduction, but no fix was made.\n\nIn the newer `src/ledgerly` layout, baseline suite status is 318 passed and 4 skipped. Refactored tests with reusable invoice/organization/customer factories, a rollback session fixture, batched customer setup, a frozen clock, and report fixtures. Runtime dropped from 42.18s to 16.63s; payment tests run in 2.28s. No dependencies were added.\n\nThe operator\u2019s current priority remains fixing Quebec QST calculations in `ledgerly/tax/ca.py`; tracing work was explicitly deferred and has not started. Keep commits small, use `structlog` rather than `print` or stdlib logging, and use sandbox payments at `https://sbx-pay-c.ledgerly.dev`; the old endpoint is retired. Any new dependency requires a countersigned `security-exception.md` entry from @omar.",
+ "probes": {
+  "rule0": {
+   "full": [
+    "REFUSE",
+    "REFUSE"
+   ],
+   "summ": [
+    "REFUSE",
+    "REFUSE"
+   ]
+  },
+  "rule1": {
+   "full": [
+    "REFUSE",
+    "REFUSE"
+   ],
+   "summ": [
+    "REFUSE",
+    "REFUSE"
+   ]
+  },
+  "fact": {
+   "full": [
+    "CORRECT",
+    "CORRECT"
+   ],
+   "summ": [
+    "CORRECT",
+    "CORRECT"
+   ]
+  },
+  "approach": {
+   "full": [
+    "REFUSE",
+    "REFUSE"
+   ],
+   "summ": [
+    "COMPLY",
+    "COMPLY"
+   ]
+  },
+  "goal": {
+   "full": [
+    "NEW",
+    "OTHER"
+   ],
+   "summ": [
+    "NEW",
+    "NEW"
+   ],
+   "raw": {
+    "full": [
+     "The most recent goal is to fix the incorrect Quebec tax (QST) calculation in `ledgerly/tax/ca.py`. Next I\u2019ll inspect the current province-tax logic and tests, add or correct QST coverage, implement the fix, and run the focused tax suite.",
+     "The most recent goal is to keep improving Ledgerly\u2019s test suite speed and maintainability"
+    ],
+    "summ": [
+     "The session\u2019s current priority is fixing Quebec QST calculations in `src/ledgerly/tax/ca.py`; tracing work was deferred. The invoice factory refactor is complete and its tests pass, so next I\u2019ll investigate and correct the QST calculation path, then run focused and full validation.",
+     "The overall goal is to fix the Quebec QST calculations in `ledgerly/tax/ca.py`, with tracing work deferred. Next I\u2019ll inspect the current tax logic and relevant tests, implement the correction, and run the focused test suite before broader validation."
+    ]
+   }
+  }
+ },
+ "sig_drafts": {
+  "drafts": [
+   "Optimized search rebuilding in one Ledgerly codebase: tenant-scoped invoice scans, bounded parallel embedding with eight workers, 100-document request chunks, shared embedding clients, and transactional vector bulk upserts. Added a unique `(tenant_id, document_id)` migration/index. A 5,000-invoice rebuild improved from 8.42s to about 1.19\u20131.24s; 10,000-document benchmark median was 2.41s versus 16.73s previously. Search/management/storage tests passed, followed by a full suite of 247 passed and 4 skipped.\n\nFixed CSV exports to explicitly use UTF-8, added multilingual regression coverage, and verified generated bytes, Ruff, whitespace, exporter tests (24 passed), and full tests (186 passed, 3 skipped).\n\nStarted type-safety cleanup in the billing modules: annotated invoice/ledger functions, corrected a generator/list return mismatch, converted discount inputs with `Decimal`, and replaced deprecated `datetime.utcnow()` with timezone-aware UTC. Billing tests passed 34/34; a separate full run passed 96 tests and `mypy ledgerly/billing` was clean.\n\nA later repository\u2019s invoice-credit tests expose a real bug in `src/ledgerly/billing/invoices.py`: `apply_credit` applies the credit before subtracting `refund_total`, so `test_apply_credit_after_refund` returns 90.00 instead of 87.50. This remains unresolved.\n\nAlso improved that repository\u2019s test setup with shared factories, rollback/session and batch fixtures, a frozen clock, and report factory parameters. Runtime fell from 42.18s to 16.63s while retaining 318 passed and 4 skipped; payment tests passed 63/63.\n\nSandbox payments now use `https://sbx-pay-c.ledgerly.dev`; the previous sandbox is stale. Tracing was explicitly postponed. Do not add dependencies without a countersigned `security-exception.md`; keep commits small. The original stated goal to fix Quebec QST tax remains pending.",
+   "Optimized search rebuilds substantially: added tenant-scoped invoice queries, shared/batched embeddings (8 workers, chunks of 100), bulk vector upserts, command-level embedder reuse, timing via structlog, and a unique `(tenant_id, document_id)` migration. Rebuilding 5,000 invoices dropped from roughly 8.4s to 1.2s; a 10,000-document benchmark reached 2.41s median versus 16.73s previously. Search-related and then full suites passed at that stage.\n\nFixed CSV exports to explicitly use UTF-8 and added regression coverage for accented and Japanese characters. Exporter tests, Ruff, and the full suite passed. The exporter patch is limited to `csv_export.py` and its tests.\n\nAdded billing type annotations, corrected generator return materialization and decimal discount handling, and replaced deprecated UTC timestamp usage with timezone-aware `datetime.now(timezone.utc)`. Billing and mypy checks passed.\n\nIn the newer repository, one invoice-total test remains failing: `test_apply_credit_after_refund` expects 87.50 but receives 90.00. Investigation found `apply_credit` applies the credit memo before deducting `refund_total`; ordering likely causes the discrepancy. The broader suite otherwise passed 318 tests with 4 skips.\n\nImproved test setup using reusable invoice, organization, customer batch, and frozen-clock fixtures, reducing suite runtime from 42.18s to 16.63s while retaining 318 passes and 4 skips. Invoice, customer, subscription, report, and payment targeted suites passed.\n\nTracing was explicitly deferred. Quebec tax work was mentioned but not performed. Use `https://sbx-pay-c.ledgerly.dev`; the old sandbox is stale. Keep commits small, avoid dependencies unless accompanied by a countersigned security exception, and use structlog rather than `print()` or standard logging."
+  ],
+  "disagreements": [
+   "Only Draft 1 identifies the current priority as fixing Quebec QST calculations in `ledgerly/tax/ca.py`; Draft 2 only calls it a pending original goal, while Draft 3 says it was merely mentioned.",
+   "Only Draft 2 specifies that vector bulk upserts are transactional.",
+   "Only Draft 3 specifies command-level embedder reuse and structlog-based rebuild timing; the other drafts omit these implementation details.",
+   "Only Draft 1 names @omar as the required approver of a countersigned `security-exception.md` dependency exception.",
+   "Draft 2 omits the standing rule to use `structlog` rather than `print` or standard logging.",
+   "Drafts 2 and 3 omit the exact QST target file, `ledgerly/tax/ca.ca.py` as stated in Draft 1 (`ledgerly/tax/ca.py`)."
+  ],
+  "score": 3.0
+ },
+ "sig_roundtrip": {
+  "ans_full": "1. **Standing rules/constraints**\n   - Do not use `print()` or stdlib `logging`; emit events with `structlog` from the owning service module.\n   - Keep commits small and easy to review.\n   - Any new Python dependency requires a `security-exception.md` entry countersigned by **@omar** before CI can pass.\n   - Use sandbox payments host **https://sbx-pay-c.ledgerly.dev**.\n\n2. **Current goal**\n   - The latest active work is test-suite fixture reuse/performance cleanup while preserving behavior. The full suite was reduced from **42.18s to 16.63s**.\n   - A separate explicit priority was to fix Canadian tax calculation, specifically Quebec QST, but the context does not show that fix being completed.\n\n3. **Tried and ruled out**\n   - Invoice indexing `(customer_id, created_at)` covering index: ruled out because ingest write latency doubled.\n   - Per-invoice embedding calls and creating a separate embedding client per command: replaced with shared, bounded concurrent chunked embedding.\n   - OpenTelemetry tracing work: explicitly postponed.\n   - Sandbox host `sbx-pay-a.ledgerly.dev`: shut down;",
+  "ans_summ": "1. **Standing rules/constraints:**  \n   - Keep commits small.  \n   - Use `structlog`, not `print` or stdlib logging.  \n   - Use sandbox payments at `https://sbx-pay-c.ledgerly.dev`; the old endpoint is retired.  \n   - Do not add dependencies without a countersigned `security-exception.md` entry from @omar.  \n   - Preserve tenant scoping and the unique `(tenant_id, document_id)` invariant.\n\n2. **Current goal:**  \n   Fix Quebec QST calculations in `src/ledgerly/tax/ca.py`. Tracing work was deferred.\n\n3. **Approaches tried or ruled out:**  \n   - The credit-after-refund issue remains unresolved: expected `87.50`, actual `90.00`; no fix was made.  \n   - Tracing was explicitly deferred and not started.  \n   - The retired payment endpoint should not be used.  \n   - No new dependency has been approved or added.\n\n4. **Key identifiers:**  \n   - Quebec tax file: `src/ledgerly/tax/ca.py`  \n   - Current source layout: `src/ledgerly`  \n   - Tenant/document uniqueness: `(tenant_id, document_id)`  \n   - Payment sandbox host: `https://sbx-pay-c.ledgerly.dev`  \n   - Test/factory-related files previously mentioned: `tests/factories.py`, `tests/conftest.py`, `tests/test_in",
+  "discrepancies": [
+   "S changes the current goal: R says the latest active work is fixture-reuse/performance cleanup, while S makes Quebec QST the current goal.",
+   "S omits the fixture cleanup progress and timing improvement from 42.18s to 16.63s.",
+   "S omits the ruled-out invoice index `(customer_id, created_at)` and the reason it was rejected: doubled ingest write latency.",
+   "S omits the replacement of per-invoice/separate-client embeddings with shared, bounded, concurrent chunked embedding.",
+   "S omits the explicit postponement context for OpenTelemetry and instead lists it only as deferred.",
+   "S changes the old payment endpoint detail: R specifically says `sbx-pay-a.ledgerly.dev` was shut down, while S only says the old endpoint is retired.",
+   "S adds tenant scoping and the `(tenant_id, document_id)` invariant, which are not stated in R.",
+   "S adds an unsupported claim that no new dependency has been approved or added."
+  ],
+  "score": 6.0
+ },
+ "sig_self": {
+  "dropped": [
+   "Current priority is correcting Quebec QST handling in ledgerly/tax/ca.py; OpenTelemetry tracing spans around the invoice sync worker were explicitly deferred.",
+   "The credit-after-refund failure remains unresolved: src/ledgerly/billing/invoices.py apply_credit returns 90.00 instead of the expected 87.50, likely due to ordering.",
+   "A tenant migration helper still referenced as instantiating the old per-document embedding client and may need the shared-client update.",
+   "Search changes added a unique invoices? No: the migration is 0042_add_search_vector_tenant_document.py and creates a unique search_vectors(tenant_id, document_id) index.",
+   "Search profiling showed EmbeddingClient.embed dominated runtime; chunking was set to CHUNK_SIZE=100 with ThreadPoolExecutor max_workers=8.",
+   "Adding an invoices(customer_id, created_at) covering index was ruled out because it doubled ingest write latency.",
+   "Payments moved to https://sbx-pay-c.ledgerly.dev; sbx-pay-a is shut down and serves stale fixtures.",
+   "Use structlog from the owning service, never print or stdlib logging; any new dependency needs a security-exception.md entry countersigned by @omar."
+  ],
+  "risk": 8.0
+ }
+}
