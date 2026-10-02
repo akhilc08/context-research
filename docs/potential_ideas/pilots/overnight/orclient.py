@@ -10,7 +10,34 @@ REPO = Path(__file__).resolve().parents[4]
 MODEL = "stealth/space-bunny-alpha"
 URL = "https://openrouter.ai/api/v1/chat/completions"
 USAGE_LOG = Path(__file__).resolve().parent / "usage.jsonl"
+ERROR_LOG = Path(__file__).resolve().parent / "errors.jsonl"
+PAUSE_FILE = Path(__file__).resolve().parent / "PAUSE"
+BUCKETS = Path("/private/tmp/or-rate-buckets")
+CALLS_PER_MIN = int(os.environ.get("OR_CALLS_PER_MIN", "900"))  # shared across all processes
 _lock = threading.Lock()
+
+
+def _throttle():
+    """Wait while the watchdog has paused traffic, then respect a cross-process per-minute cap."""
+    while PAUSE_FILE.exists():
+        time.sleep(15)
+    BUCKETS.mkdir(exist_ok=True)
+    while True:
+        bucket = BUCKETS / str(int(time.time() // 60))
+        try:
+            used = bucket.stat().st_size
+        except FileNotFoundError:
+            used = 0
+        if used < CALLS_PER_MIN:
+            with open(bucket, "ab") as f:
+                f.write(b".")
+            return
+        time.sleep(60 - time.time() % 60 + random.random() * 3)
+
+
+def _log_error(kind, detail):
+    with _lock, open(ERROR_LOG, "a") as f:
+        f.write(json.dumps({"t": round(time.time()), "kind": kind, "detail": detail[:200]}) + "\n")
 
 
 def _load_key():
@@ -42,6 +69,7 @@ def chat(messages, max_tokens=400, temperature=0.7, model=MODEL, reasoning_effor
     delay = 2.0
     last = None
     for attempt in range(retries):
+        _throttle()
         req = urllib.request.Request(URL, data=data, headers={
             "Authorization": f"Bearer {KEY}", "Content-Type": "application/json",
             "X-Title": "context-research overnight"})
@@ -62,10 +90,12 @@ def chat(messages, max_tokens=400, temperature=0.7, model=MODEL, reasoning_effor
             return msg if raw else text
         except urllib.error.HTTPError as e:
             last = f"HTTP {e.code}: {e.read()[:200]!r}"
+            _log_error(f"http{e.code}", f"{model} {last}")
             if e.code in (400, 401, 403) and attempt > 1:
                 break
         except Exception as e:  # network, timeout, empty, provider error
             last = repr(e)[:300]
+            _log_error("other", f"{model} {last}")
         time.sleep(delay + random.random() * delay)
         delay = min(delay * 1.7, 90)
     raise RuntimeError(f"chat failed after {retries} tries: {last}")
