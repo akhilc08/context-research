@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E16, E17, and E18 were still running. Their rows say so.
+Status: written while E3, E16, E17, E18, and E19 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -32,6 +32,7 @@ Status: written while E3, E16, E17, and E18 were still running. Their rows say s
 | E15 `e15_rule_salience` | Why is an intact summarized rule violated more than a pinned one? | Framing ("Operator rule (active):") is the biggest factor, then exact wording; position and separation barely matter. Pinned rules beat raw history (6% vs 15%). Keep-rules and structured-list prompts scale to 20 rules over 16 rounds; structured is indistinguishable from pin-all. | `d1e3fc7` |
 | E16 `e16_schema_ablation` | Which sections of a structured compaction schema matter? | Running. | |
 | E17 `e17_operator_ledger` | A combined operator ledger (active framing, versioned facts, revocations, plan) vs pinning raw operator turns, including revoked and amended rules | Running. | |
+| E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
 ## What the night suggests
