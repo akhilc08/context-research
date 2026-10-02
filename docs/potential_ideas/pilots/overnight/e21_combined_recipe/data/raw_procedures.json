@@ -1,0 +1,1514 @@
+[
+ {
+  "name": "resend_delayed_delivery_notifications",
+  "goal": "Re-send three delayed-delivery notifications for concrete shipments and verify that each notification event was recorded.",
+  "steps": [
+   {
+    "title": "Find delayed shipments",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, promised_at, status FROM shipments WHERE shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') ORDER BY shipment_id;\"",
+    "output": "SHP-10482|2026-04-08T16:00:00Z|delayed\nSHP-10493|2026-04-08T17:30:00Z|delayed\nSHP-10507|2026-04-08T19:00:00Z|delayed",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, status FROM shipments WHERE shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') ORDER BY shipment_id;\""
+   },
+   {
+    "title": "Check existing notification deliveries",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, COUNT(*) FROM notification_deliveries WHERE notification_type = 'delayed_delivery' AND shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') GROUP BY shipment_id ORDER BY shipment_id;\"",
+    "output": "SHP-10482|1\nSHP-10493|0\nSHP-10507|0",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, COUNT(*) FROM notification_deliveries WHERE notification_type = 'delayed_delivery' AND shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') GROUP BY shipment_id ORDER BY shipment_id;\""
+   },
+   {
+    "title": "Send first delayed notification",
+    "command": "curl --fail-with-body -sS -X POST http://shipments-api:8000/internal/notifications/delayed-delivery -H 'Content-Type: application/json' -d '{\"shipment_id\":\"SHP-10482\",\"channel\":\"email\",\"template\":\"delayed_delivery_v2\",\"reason\":\"carrier_scan_missing\"}'",
+    "output": "{\"accepted\":true,\"shipment_id\":\"SHP-10482\",\"delivery_id\":\"ND-78431\"}",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT delivery_id, shipment_id, channel, created_at FROM notification_deliveries WHERE shipment_id = 'SHP-10482' AND notification_type = 'delayed_delivery' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Send second delayed notification",
+    "command": "curl --fail-with-body -sS -X POST http://shipments-api:8000/internal/notifications/delayed-delivery -H 'Content-Type: application/json' -d '{\"shipment_id\":\"SHP-10493\",\"channel\":\"slack\",\"template\":\"delayed_delivery_v2\",\"reason\":\"carrier_scan_missing\"}'",
+    "output": "{\"accepted\":true,\"shipment_id\":\"SHP-10493\",\"delivery_id\":\"ND-78432\"}",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT delivery_id, shipment_id, channel, created_at FROM notification_deliveries WHERE shipment_id = 'SHP-10493' AND notification_type = 'delayed_delivery' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Send third delayed notification",
+    "command": "curl --fail-with-body -sS -X POST http://shipments-api:8000/internal/notifications/delayed-delivery -H 'Content-Type: application/json' -d '{\"shipment_id\":\"SHP-10507\",\"channel\":\"email\",\"template\":\"delayed_delivery_v2\",\"reason\":\"carrier_scan_missing\"}'",
+    "output": "{\"accepted\":true,\"shipment_id\":\"SHP-10507\",\"delivery_id\":\"ND-78433\"}",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT delivery_id, shipment_id, channel, created_at FROM notification_deliveries WHERE shipment_id = 'SHP-10507' AND notification_type = 'delayed_delivery' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Confirm notification queue health",
+    "command": "docker compose exec -T redis redis-cli --raw GET harborline:notification:queue:paused",
+    "output": "nil",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T redis redis-cli --raw GET harborline:notification:queue:paused"
+   },
+   {
+    "title": "Append notification audit record",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -c \"INSERT INTO notification_audit_log(actor, action, shipment_ids, notification_count) VALUES ('ops-bot', 'resend_delayed_delivery', ARRAY['SHP-10482','SHP-10493','SHP-10507'], 3);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT actor, action, notification_count FROM notification_audit_log WHERE actor = 'ops-bot' AND action = 'resend_delayed_delivery' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Verify all notification deliveries",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, COUNT(*) FROM notification_deliveries WHERE notification_type = 'delayed_delivery' AND shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') AND created_at >= '2026-04-09T12:00:00Z' GROUP BY shipment_id ORDER BY shipment_id;\"",
+    "output": "SHP-10482|1\nSHP-10493|1\nSHP-10507|1",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT COUNT(*) FROM notification_deliveries WHERE notification_type = 'delayed_delivery' AND shipment_id IN ('SHP-10482','SHP-10493','SHP-10507') AND created_at >= '2026-04-09T12:00:00Z';\""
+   }
+  ],
+  "id": "p000"
+ },
+ {
+  "name": "backfill_carrier_tracking_numbers",
+  "goal": "Backfill missing carrier tracking numbers for three shipments from the carrier gateway export and verify the resulting records.",
+  "steps": [
+   {
+    "title": "Locate missing tracking numbers",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, carrier, tracking_number FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') ORDER BY shipment_id;\"",
+    "output": "SHP-20481|swift|\\N\nSHP-20496|swift|\\N\nSHP-20512|swift|\\N",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, tracking_number FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') ORDER BY shipment_id;\""
+   },
+   {
+    "title": "Confirm tracking column schema",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'tracking_number';\"",
+    "output": "tracking_number|character varying|YES",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT data_type, is_nullable FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'tracking_number';\""
+   },
+   {
+    "title": "Backfill first tracking number",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -c \"UPDATE shipments SET tracking_number = 'SWIFT784102930' WHERE shipment_id = 'SHP-20481';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, tracking_number FROM shipments WHERE shipment_id = 'SHP-20481';\""
+   },
+   {
+    "title": "Backfill second tracking number",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -c \"UPDATE shipments SET tracking_number = 'SWIFT784102947' WHERE shipment_id = 'SHP-20496';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, tracking_number FROM shipments WHERE shipment_id = 'SHP-20496';\""
+   },
+   {
+    "title": "Backfill third tracking number",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -c \"UPDATE shipments SET tracking_number = 'SWIFT784103016' WHERE shipment_id = 'SHP-20512';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, tracking_number FROM shipments WHERE shipment_id = 'SHP-20512';\""
+   },
+   {
+    "title": "Append backfill audit record",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -c \"INSERT INTO tracking_backfill_audit(actor, source, shipment_ids) VALUES ('ops-bot', 'carrier-gateway-export-2026-04-09', ARRAY['SHP-20481','SHP-20496','SHP-20512']);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT actor, source, array_length(shipment_ids, 1) FROM tracking_backfill_audit WHERE actor = 'ops-bot' AND source = 'carrier-gateway-export-2026-04-09' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Check updated shipment count",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT COUNT(*) FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') AND tracking_number IS NOT NULL;\"",
+    "output": "3",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT COUNT(*) FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') AND tracking_number IN ('SWIFT784102930','SWIFT784102947','SWIFT784103016');\""
+   },
+   {
+    "title": "Verify backfilled tracking values",
+    "command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT shipment_id, tracking_number FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') ORDER BY shipment_id;\"",
+    "output": "SHP-20481|SWIFT784102930\nSHP-20496|SWIFT784102947\nSHP-20512|SWIFT784103016",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d harborline -Atc \"SELECT COUNT(*) FROM shipments WHERE shipment_id IN ('SHP-20481','SHP-20496','SHP-20512') AND tracking_number LIKE 'SWIFT78410%';\""
+   }
+  ],
+  "id": "p001"
+ },
+ {
+  "name": "rotate_carrier_gateway_key_20250308",
+  "goal": "Rotate the production Northstar carrier gateway credential, verify traffic, revoke the old key, and notify the on-call channel.",
+  "steps": [
+   {
+    "title": "Inspect Current Carrier Secret",
+    "command": "aws secretsmanager describe-secret --secret-id harborline/carrier-gateway/prod --region us-east-1",
+    "output": "{\"Name\":\"harborline/carrier-gateway/prod\",\"VersionIdsToStages\":{\"e3f1a2c4\":\"AWSCURRENT\"}}",
+    "idempotent": true,
+    "verify_command": "aws secretsmanager get-secret-value --secret-id harborline/carrier-gateway/prod --region us-east-1 --query VersionId --output text"
+   },
+   {
+    "title": "Install New Gateway Secret",
+    "command": "kubectl create secret generic carrier-gateway-api-key-20250308 --from-literal=api-key=ns_live_7Kp2Qz9Lm4Vx8 --dry-run=client -o yaml | kubectl apply -f -",
+    "output": "secret/carrier-gateway-api-key-20250308 configured",
+    "idempotent": true,
+    "verify_command": "kubectl get secret carrier-gateway-api-key-20250308 -o jsonpath='{.data.api-key}' | base64 -d | sha256sum"
+   },
+   {
+    "title": "Activate New Carrier Key",
+    "command": "curl --fail-with-body -sS -X POST https://api.northstarfreight.example/v1/keys/activate -H 'Authorization: Bearer ns_admin_4Tq8Lm2Z' -H 'Content-Type: application/json' --data '{\"key_id\":\"ns_live_7Kp2Qz9Lm4Vx8\",\"environment\":\"production\"}'",
+    "output": "{\"key_id\":\"ns_live_7Kp2Qz9Lm4Vx8\",\"status\":\"active\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -sS https://api.northstarfreight.example/v1/keys/ns_live_7Kp2Qz9Lm4Vx8 -H 'Authorization: Bearer ns_admin_4Tq8Lm2Z'"
+   },
+   {
+    "title": "Restart Carrier Gateway Deployment",
+    "command": "kubectl rollout restart deployment/carrier-gateway -n harborline-production",
+    "output": "deployment.apps/carrier-gateway restarted",
+    "idempotent": false,
+    "verify_command": "kubectl rollout status deployment/carrier-gateway -n harborline-production --timeout=120s"
+   },
+   {
+    "title": "Run Gateway Authentication Smoke Test",
+    "command": "curl --fail-with-body -sS https://carrier-gateway.harborline.example/healthz?credential=ns_live_7Kp2Qz9Lm4Vx8",
+    "output": "{\"status\":\"ok\",\"credential\":\"accepted\",\"carrier\":\"northstar\"}",
+    "idempotent": true,
+    "verify_command": "curl --fail-with-body -sS https://carrier-gateway.harborline.example/healthz?credential=ns_live_7Kp2Qz9Lm4Vx8"
+   },
+   {
+    "title": "Revoke Previous Carrier Key",
+    "command": "curl --fail-with-body -sS -X POST https://api.northstarfreight.example/v1/keys/ns_live_2Lm8Pd4Rc6Ty/revoke -H 'Authorization: Bearer ns_admin_4Tq8Lm2Z' -H 'Content-Type: application/json' --data '{\"reason\":\"scheduled harborline rotation 2025-03-08\"}'",
+    "output": "{\"key_id\":\"ns_live_2Lm8Pd4Rc6Ty\",\"status\":\"revoked\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -sS https://api.northstarfreight.example/v1/keys/ns_live_2Lm8Pd4Rc6Ty -H 'Authorization: Bearer ns_admin_4Tq8Lm2Z'"
+   },
+   {
+    "title": "Notify Carrier Operations Channel",
+    "command": "curl --fail-with-body -sS -X POST https://hooks.slack.com/services/T04HL/B08HL/Q7northstarRotation20250308 -H 'Content-Type: application/json' --data '{\"text\":\"Northstar production API key rotated successfully; old key ns_live_2Lm8Pd4Rc6Ty is revoked.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "kubectl get secret carrier-gateway-api-key-20250308 -n harborline-production -o jsonpath='{.metadata.name}{\"\\n\"}'"
+   },
+   {
+    "title": "Verify Deployment Credential Revision",
+    "command": "kubectl get deployment carrier-gateway -n harborline-production -o jsonpath='{.spec.template.metadata.annotations.harborline\\.io/credential-revision}{\"\\n\"}'",
+    "output": "2025-03-08-northstar-rotation",
+    "idempotent": true,
+    "verify_command": "kubectl get pods -n harborline-production -l app=carrier-gateway -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.status.containerStatuses[0].ready}{\"\\n\"}{end}'"
+   }
+  ],
+  "id": "p002"
+ },
+ {
+  "name": "reprocess_edifact_214_dead_letters_20250308",
+  "goal": "Replay a bounded batch of dead-lettered EDI 214 tracking messages into the tracking pipeline, confirm consumption, and close the incident with an audit trail.",
+  "steps": [
+   {
+    "title": "Measure Dead-Letter Queue Offsets",
+    "command": "docker exec harborline-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list harborline-kafka:9092 --topic hl.tracking.edifact214.dlq --time -1",
+    "output": "hl.tracking.edifact214.dlq:0:18422",
+    "idempotent": true,
+    "verify_command": "docker exec harborline-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list harborline-kafka:9092 --topic hl.tracking.edifact214.dlq --time -1"
+   },
+   {
+    "title": "Select Bounded Dead-Letter Batch",
+    "command": "docker exec harborline-postgres psql -U harborline -d tracking -P pager=off -c \"SELECT message_id, edi_control_number, received_at FROM edifact_214_dead_letters WHERE incident_id = 'INC-214-20250308' AND replay_state = 'pending' ORDER BY received_at LIMIT 500;\"",
+    "output": "500 rows selected; message_id range MSG-214-88410 through MSG-214-88909",
+    "idempotent": true,
+    "verify_command": "docker exec harborline-postgres psql -U harborline -d tracking -Atc \"SELECT count(*) FROM edifact_214_dead_letters WHERE incident_id = 'INC-214-20250308' AND replay_state = 'pending';\""
+   },
+   {
+    "title": "Publish Batch To Replay Topic",
+    "command": "printf 'MSG-214-88410|21400088410|MSG-214-88909\\n' | docker exec -i harborline-kafka kafka-console-producer --broker-list harborline-kafka:9092 --topic hl.tracking.edifact214.replay --property parse.key=true --property key.separator=:",
+    "output": "1 replay envelope published for 500 selected messages",
+    "idempotent": false,
+    "verify_command": "docker exec harborline-kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list harborline-kafka:9092 --topic hl.tracking.edifact214.replay --time -1"
+   },
+   {
+    "title": "Submit Replay To Carrier Gateway",
+    "command": "curl --fail-with-body -sS -X POST https://carrier-gateway.harborline.example/internal/v1/edi214/replay -H 'X-Harborline-Incident: INC-214-20250308' -H 'Idempotency-Key: absent-for-dlq-replay' -H 'Content-Type: application/json' --data '{\"source_topic\":\"hl.tracking.edifact214.dlq\",\"batch_start\":\"MSG-214-88410\",\"batch_end\":\"MSG-214-88909\",\"limit\":500}'",
+    "output": "{\"accepted\":500,\"replay_id\":\"RPL-20250308-00417\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -sS https://carrier-gateway.harborline.example/internal/v1/edi214/replay/RPL-20250308-00417"
+   },
+   {
+    "title": "Check Replay Consumer Progress",
+    "command": "docker exec harborline-kafka kafka-consumer-groups.sh --bootstrap-server harborline-kafka:9092 --describe --group tracking-ingest-214-replay",
+    "output": "hl.tracking.edifact214.replay  CURRENT-OFFSET 500  LAG 0",
+    "idempotent": true,
+    "verify_command": "docker exec harborline-kafka kafka-consumer-groups.sh --bootstrap-server harborline-kafka:9092 --describe --group tracking-ingest-214-replay | grep 'hl.tracking.edifact214.replay'"
+   },
+   {
+    "title": "Mark Replay Rows Processed",
+    "command": "docker exec harborline-postgres psql -U harborline -d tracking -v ON_ERROR_STOP=1 -c \"UPDATE edifact_214_dead_letters SET replay_state = 'replayed', replay_id = 'RPL-20250308-00417', replayed_at = now() WHERE incident_id = 'INC-214-20250308' AND message_id BETWEEN 'MSG-214-88410' AND 'MSG-214-88909' AND replay_state = 'pending';\"",
+    "output": "UPDATE 500",
+    "idempotent": true,
+    "verify_command": "docker exec harborline-postgres psql -U harborline -d tracking -Atc \"SELECT replay_state, count(*) FROM edifact_214_dead_letters WHERE incident_id = 'INC-214-20250308' GROUP BY replay_state ORDER BY replay_state;\""
+   },
+   {
+    "title": "Post Replay Completion Notice",
+    "command": "curl --fail-with-body -sS -X POST https://hooks.slack.com/services/T04HL/B08HL/Q7inc214Replay20250308 -H 'Content-Type: application/json' --data '{\"text\":\"EDI 214 dead-letter replay RPL-20250308-00417 completed for 500 messages; tracking-ingest consumer lag is zero.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "docker exec harborline-postgres psql -U harborline -d tracking -Atc \"SELECT replay_id, replay_state FROM edifact_214_dead_letters WHERE replay_id = 'RPL-20250308-00417' LIMIT 1;\""
+   },
+   {
+    "title": "Confirm No Pending Incident Messages",
+    "command": "docker exec harborline-postgres psql -U harborline -d tracking -P pager=off -c \"SELECT count(*) AS pending_messages FROM edifact_214_dead_letters WHERE incident_id = 'INC-214-20250308' AND replay_state <> 'replayed';\"",
+    "output": "pending_messages: 0",
+    "idempotent": true,
+    "verify_command": "docker exec harborline-postgres psql -U harborline -d tracking -Atc \"SELECT count(*) FROM edifact_214_dead_letters WHERE incident_id = 'INC-214-20250308' AND replay_state = 'replayed';\""
+   }
+  ],
+  "id": "p003"
+ },
+ {
+  "name": "fedex_adapter_cutover",
+  "goal": "Cut production FedEx shipment traffic from the legacy adapter to the new adapter and verify the new route is healthy.",
+  "steps": [
+   {
+    "title": "Check legacy adapter health",
+    "command": "kubectl -n harborline-prod get deployment fedex-legacy-adapter -o jsonpath='{.status.readyReplicas}/{.status.replicas}{\"\\n\"}'",
+    "output": "fedex-legacy-adapter: 4/4",
+    "idempotent": true,
+    "verify_command": "kubectl -n harborline-prod get pods -l app=fedex-legacy-adapter -o wide"
+   },
+   {
+    "title": "Validate new adapter configuration",
+    "command": "jq -e '.carriers.fedex.adapter == \"fedex-adapter-v2\" and .carriers.fedex.timeout_ms == 5000' harborline/config/carriers.json",
+    "output": "true",
+    "idempotent": true,
+    "verify_command": "jq '.carriers.fedex' harborline/config/carriers.json"
+   },
+   {
+    "title": "Enqueue in-flight shipment retries",
+    "command": "psql -d harborline -v ON_ERROR_STOP=1 -c \"INSERT INTO shipment_retry_jobs (shipment_id, carrier, adapter, requested_at) SELECT shipment_id, 'FEDEX', 'fedex-adapter-v2', now() FROM shipments WHERE carrier = 'FEDEX' AND status IN ('PENDING','RETRY') AND shipment_id BETWEEN 'SHP-100042' AND 'SHP-100219';\"",
+    "output": "INSERT 0 178",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT count(*) FROM shipment_retry_jobs WHERE carrier = 'FEDEX' AND adapter = 'fedex-adapter-v2' AND requested_at > now() - interval '15 minutes';\""
+   },
+   {
+    "title": "Switch FedEx route configuration",
+    "command": "kubectl -n harborline-prod patch configmap carrier-routing --type=merge -p '{\"data\":{\"fedex-adapter\":\"fedex-adapter-v2\"}}'",
+    "output": "configmap/carrier-routing patched",
+    "idempotent": true,
+    "verify_command": "kubectl -n harborline-prod get configmap carrier-routing -o jsonpath='{.data.fedex-adapter}{\"\\n\"}'"
+   },
+   {
+    "title": "Notify operations of cutover",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04HL/B07HL/CUTOVER123 -H 'Content-Type: application/json' -d '{\"channel\":\"#hl-carrier-ops\",\"text\":\"FedEx production traffic cut over to fedex-adapter-v2; retry jobs SHP-100042 through SHP-100219 were enqueued.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "kubectl -n harborline-prod logs deployment/notification-service --since=10m | grep -F 'FedEx production traffic cut over to fedex-adapter-v2' | tail -1"
+   },
+   {
+    "title": "Record cutover audit event",
+    "command": "psql -d harborline -v ON_ERROR_STOP=1 -c \"INSERT INTO deployment_audit_log (deployment_name, environment, actor, metadata) VALUES ('fedex-adapter-v2', 'production', '@maya.chen', '{\\\"route\\\":\\\"fedex-adapter-v2\\\",\\\"window\\\":\\\"SHP-100042-SHP-100219\\\"}');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT actor, metadata->>'route' FROM deployment_audit_log WHERE deployment_name = 'fedex-adapter-v2' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Scale down legacy adapter",
+    "command": "kubectl -n harborline-prod scale deployment/fedex-legacy-adapter --replicas=0",
+    "output": "deployment.apps/fedex-legacy-adapter scaled",
+    "idempotent": true,
+    "verify_command": "kubectl -n harborline-prod get deployment fedex-legacy-adapter -o jsonpath='{.spec.replicas}{\"\\n\"}'"
+   },
+   {
+    "title": "Verify FedEx traffic health",
+    "command": "curl -fsS https://tracking.harborline.com/internal/health/carriers/fedex | jq -e '.adapter == \"fedex-adapter-v2\" and .status == \"healthy\" and .error_rate < 0.01'",
+    "output": "{\"status\":\"healthy\",\"adapter\":\"fedex-adapter-v2\",\"error_rate\":0.0021}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://tracking.harborline.com/internal/metrics/carriers/fedex | grep -E 'fedex_requests_total|rate_errors' | tail -2"
+   }
+  ],
+  "id": "p004"
+ },
+ {
+  "name": "rates_table_release_2025_03",
+  "goal": "Publish rates table release 2025.03, activate it in production, and notify downstream consumers.",
+  "steps": [
+   {
+    "title": "Check rates release staging",
+    "command": "aws s3api head-object --bucket harborline-rates --key releases/2025.03/rates.csv",
+    "output": "{\"ContentLength\":184320,\"ETag\":\"\\\"9f2c1d8a\\\"\"}",
+    "idempotent": true,
+    "verify_command": "aws s3api list-objects-v2 --bucket harborline-rates --prefix releases/2025.03/ --query 'Contents[].Key' --output text"
+   },
+   {
+    "title": "Validate staged rates checksum",
+    "command": "printf '%s  %s\\n' '9f2c1d8a' 'releases/2025.03/rates.csv' | sha256sum -c -",
+    "output": "releases/2025.03/rates.csv: OK",
+    "idempotent": true,
+    "verify_command": "aws s3api head-object --bucket harborline-rates --key releases/2025.03/rates.csv --query 'ETag' --output text"
+   },
+   {
+    "title": "Create rates release record",
+    "command": "psql -d harborline -v ON_ERROR_STOP=1 -c \"INSERT INTO rates_releases (release_id, s3_key, checksum, status, created_by) VALUES ('2025.03', 'releases/2025.03/rates.csv', '9f2c1d8a', 'STAGED', '@leo.park');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT release_id, status, created_by FROM rates_releases WHERE release_id = '2025.03' ORDER BY created_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Publish rates artifact",
+    "command": "aws s3 cp releases/2025.03/rates.csv s3://harborline-rates/releases/2025.03/rates.csv --acl private --metadata sha256=9f2c1d8a",
+    "output": "upload: releases/2025.03/rates.csv to s3://harborline-rates/releases/2025.03/rates.csv",
+    "idempotent": true,
+    "verify_command": "aws s3api head-object --bucket harborline-rates --key releases/2025.03/rates.csv --query 'Metadata.sha256' --output text"
+   },
+   {
+    "title": "Announce rates release event",
+    "command": "printf '%s\\n' '{\"event\":\"rates_release_published\",\"release_id\":\"2025.03\",\"effective_at\":\"2025-03-01T00:00:00Z\"}' | kafka-console-producer --bootstrap-server kafka-0.harborline.prod:9092 --topic rates.release.events",
+    "output": "Event written to topic rates.release.events",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer --bootstrap-server kafka-0.harborline.prod:9092 --topic rates.release.events --from-beginning --timeout-ms 5000 | grep -F '\"release_id\":\"2025.03\"' | tail -1"
+   },
+   {
+    "title": "Activate production rates release",
+    "command": "psql -d harborline -v ON_ERROR_STOP=1 -c \"UPDATE rates_config SET active_release_id = '2025.03', activated_at = now(), activated_by = '@leo.park' WHERE environment = 'production';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT active_release_id FROM rates_config WHERE environment = 'production';\""
+   },
+   {
+    "title": "Notify rates consumers",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04HL/B07HL/RATES202503 -H 'Content-Type: application/json' -d '{\"channel\":\"#hl-rates-ops\",\"text\":\"Rates release 2025.03 is active in production, effective 2025-03-01T00:00:00Z.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "kubectl -n harborline-prod logs deployment/notification-service --since=10m | grep -F 'Rates release 2025.03 is active in production' | tail -1"
+   },
+   {
+    "title": "Verify production rates lookup",
+    "command": "curl -fsS 'https://rates.harborline.com/v1/lookup?origin=SEA&destination=ORD&weight_lb=125&release=2025.03' | jq -e '.release_id == \"2025.03\" and .base_rate > 0'",
+    "output": "{\"release_id\":\"2025.03\",\"base_rate\":18.42,\"currency\":\"USD\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://rates.harborline.com/internal/health | jq -e '.active_release == \"2025.03\" and .status == \"healthy\"'"
+   }
+  ],
+  "id": "p005"
+ },
+ {
+  "name": "credit_q2_sla_misses",
+  "goal": "Credit accounts for Q2 SLA misses, issue notifications, and reconcile the resulting financial records.",
+  "steps": [
+   {
+    "title": "Inspect Q2 SLA Breaches",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT breach_id, shipment_id, customer_id, missed_at, credit_cents FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open' ORDER BY breach_id;\"",
+    "output": "12 breach records returned for customers acme and northstar.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS open_breaches FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open';\""
+   },
+   {
+    "title": "Preview Customer Credit Totals",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT customer_id, sum(credit_cents) AS total_credit_cents FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open' GROUP BY customer_id ORDER BY customer_id;\"",
+    "output": "acme: 18400; northstar: 9750 total credit cents.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT customer_id, coalesce(sum(credit_cents),0) AS pending_credit_cents FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open' GROUP BY customer_id ORDER BY customer_id;\""
+   },
+   {
+    "title": "Apply SLA Credit Ledger",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO customer_credit_ledger (ledger_id, customer_id, breach_id, credit_cents, reason, created_at) SELECT 'ledger-q2-' || breach_id, customer_id, breach_id, credit_cents, 'Q2 SLA miss', now() FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open';\"",
+    "output": "INSERT 0 12",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT customer_id, count(*) AS ledger_entries, sum(credit_cents) AS credited_cents FROM customer_credit_ledger WHERE reason = 'Q2 SLA miss' GROUP BY customer_id ORDER BY customer_id;\""
+   },
+   {
+    "title": "Update Breach Credit Status",
+    "command": "psql \"$DATABASE_URL\" -c \"UPDATE sla_breaches SET status = 'credited', credited_at = now() WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'open';\"",
+    "output": "UPDATE 12",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS credited_breaches FROM sla_breaches WHERE missed_at >= '2024-04-01' AND missed_at < '2024-07-01' AND status = 'credited';\""
+   },
+   {
+    "title": "Queue Customer Credit Notices",
+    "command": "curl -fsS -X POST http://localhost:8080/internal/jobs/credit-notices -H 'Content-Type: application/json' -d '{\"job_id\":\"credit-notices-q2-2024\",\"customer_ids\":[\"acme\",\"northstar\"],\"ledger_reason\":\"Q2 SLA miss\"}'",
+    "output": "queued credit-notices-q2-2024",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT job_id, status, created_at FROM background_jobs WHERE job_id = 'credit-notices-q2-2024';\""
+   },
+   {
+    "title": "Post Accounting Journal Entries",
+    "command": "curl -fsS -X POST http://localhost:8080/internal/accounting/post-journal -H 'Content-Type: application/json' -d '{\"journal_id\":\"sla-credit-journal-q2-2024\",\"source\":\"Q2 SLA miss\",\"debit_account\":\"sla-penalty-expense\",\"credit_account\":\"customer-credit-liability\",\"amount_cents\":28150}'",
+    "output": "journal sla-credit-journal-q2-2024 posted",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT journal_id, status, amount_cents FROM accounting_journals WHERE journal_id = 'sla-credit-journal-q2-2024';\""
+   },
+   {
+    "title": "Reconcile Credits Against Breaches",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT b.customer_id, b.credit_cents AS expected_cents, coalesce(sum(l.credit_cents),0) AS ledger_cents FROM sla_breaches b LEFT JOIN customer_credit_ledger l ON l.breach_id = b.breach_id AND l.reason = 'Q2 SLA miss' WHERE b.missed_at >= '2024-04-01' AND b.missed_at < '2024-07-01' GROUP BY b.breach_id, b.customer_id, b.credit_cents ORDER BY b.customer_id, b.breach_id;\"",
+    "output": "12 rows reconcile with zero variance.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS mismatches FROM (SELECT b.breach_id, b.credit_cents, coalesce(sum(l.credit_cents),0) AS ledger_cents FROM sla_breaches b LEFT JOIN customer_credit_ledger l ON l.breach_id = b.breach_id AND l.reason = 'Q2 SLA miss' WHERE b.missed_at >= '2024-04-01' AND b.missed_at < '2024-07-01' GROUP BY b.breach_id, b.credit_cents HAVING b.credit_cents <> coalesce(sum(l.credit_cents),0)) s;\""
+   },
+   {
+    "title": "Confirm Notice Job Completion",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT job_id, status, completed_at FROM background_jobs WHERE job_id = 'credit-notices-q2-2024';\"",
+    "output": "credit-notices-q2-2024 | completed | 2024-07-03 16:45:12+00",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS completed_jobs FROM background_jobs WHERE job_id = 'credit-notices-q2-2024' AND status = 'completed';\""
+   }
+  ],
+  "id": "p006"
+ },
+ {
+  "name": "replay_acme_shipment_webhooks",
+  "goal": "Replay selected shipment webhook deliveries for Acme and verify that the customer endpoint processed each delivery.",
+  "steps": [
+   {
+    "title": "List Failed Acme Webhooks",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, event_type, shipment_id, endpoint, failed_at FROM webhook_deliveries WHERE customer_id = 'acme' AND status = 'failed' AND shipment_id IN ('shp-84021','shp-84022') ORDER BY delivery_id;\"",
+    "output": "2 failed deliveries found: dlv-55018 and dlv-55019.",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, status FROM webhook_deliveries WHERE customer_id = 'acme' AND shipment_id IN ('shp-84021','shp-84022') ORDER BY delivery_id;\""
+   },
+   {
+    "title": "Validate Replay Payload Signatures",
+    "command": "python3 -c \"import json,hmac,hashlib; rows=[json.loads(x) for x in open('/var/lib/harborline/replay/dlv-55018.json'),json.loads(x) for x in open('/var/lib/harborline/replay/dlv-55019.json')]; print([(r['delivery_id'], hmac.new(b'whsec_acme_2024', open(r['payload_file'],'rb').read(), hashlib.sha256).hexdigest()==r['signature']) for r in rows])\"",
+    "output": "[('dlv-55018', True), ('dlv-55019', True)]",
+    "idempotent": true,
+    "verify_command": "python3 -c \"import json; print([(r['delivery_id'], r['signature_verified']) for r in map(json.loads, open('/var/lib/harborline/replay/replay_manifest.json'))])\""
+   },
+   {
+    "title": "Replay First Shipment Delivery",
+    "command": "curl -fsS -X POST https://api.acme.example/v1/hooks/shipments -H 'X-Harborline-Delivery: dlv-55018' -H 'X-Harborline-Signature: sha256=7d9f2c4a1b8e6035' -H 'Content-Type: application/json' --data-binary @/var/lib/harborline/replay/dlv-55018.json",
+    "output": "200 OK; delivery dlv-55018 accepted",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, response_status, replay_count FROM webhook_delivery_attempts WHERE delivery_id = 'dlv-55018' ORDER BY attempted_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Replay Second Shipment Delivery",
+    "command": "curl -fsS -X POST https://api.acme.example/v1/hooks/shipments -H 'X-Harborline-Delivery: dlv-55019' -H 'X-Harborline-Signature: sha256=1a4c8e0b6d927f33' -H 'Content-Type: application/json' --data-binary @/var/lib/harborline/replay/dlv-55019.json",
+    "output": "200 OK; delivery dlv-55019 accepted",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, response_status, replay_count FROM webhook_delivery_attempts WHERE delivery_id = 'dlv-55019' ORDER BY attempted_at DESC LIMIT 1;\""
+   },
+   {
+    "title": "Mark Replayed Deliveries Sent",
+    "command": "psql \"$DATABASE_URL\" -c \"UPDATE webhook_deliveries SET status = 'replayed', replayed_at = now(), replay_batch = 'acme-2024-07-03' WHERE delivery_id IN ('dlv-55018','dlv-55019') AND status = 'failed';\"",
+    "output": "UPDATE 2",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, status, replayed_at, replay_batch FROM webhook_deliveries WHERE delivery_id IN ('dlv-55018','dlv-55019') ORDER BY delivery_id;\""
+   },
+   {
+    "title": "Publish Replay Audit Event",
+    "command": "curl -fsS -X POST http://localhost:8080/internal/events/publish -H 'Content-Type: application/json' -d '{\"event_id\":\"webhook-replay-acme-2024-07-03\",\"event_type\":\"webhook.replay.completed\",\"customer_id\":\"acme\",\"delivery_ids\":[\"dlv-55018\",\"dlv-55019\"],\"occurred_at\":\"2024-07-03T17:05:00Z\"}'",
+    "output": "event webhook-replay-acme-2024-07-03 published",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT event_id, published_at FROM event_publish_log WHERE event_id = 'webhook-replay-acme-2024-07-03';\""
+   },
+   {
+    "title": "Check Customer Delivery Receipts",
+    "command": "curl -fsS https://api.acme.example/v1/hooks/receipts?delivery_ids=dlv-55018,dlv-55019",
+    "output": "{\"receipts\":[{\"delivery_id\":\"dlv-55018\",\"received\":true},{\"delivery_id\":\"dlv-55019\",\"received\":true}]}",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT delivery_id, count(*) AS successful_attempts FROM webhook_delivery_attempts WHERE delivery_id IN ('dlv-55018','dlv-55019') AND response_status BETWEEN 200 AND 299 GROUP BY delivery_id ORDER BY delivery_id;\""
+   },
+   {
+    "title": "Confirm Replay Batch Completion",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT replay_batch, count(*) AS deliveries, min(status) AS min_status, max(status) AS max_status FROM webhook_deliveries WHERE replay_batch = 'acme-2024-07-03' GROUP BY replay_batch;\"",
+    "output": "acme-2024-07-03 | 2 | replayed | replayed",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -c \"SELECT count(*) AS remaining_failed FROM webhook_deliveries WHERE replay_batch = 'acme-2024-07-03' AND status <> 'replayed';\""
+   }
+  ],
+  "id": "p007"
+ },
+ {
+  "name": "pod_photo_bucket_migration",
+  "goal": "Migrate proof-of-delivery photos for the HL-2025-041 batch to the harborline-pod-photos-v2 bucket while preserving object metadata and database references.",
+  "steps": [
+   {
+    "title": "Inventory Legacy Photo Objects",
+    "command": "aws s3api list-objects-v2 --bucket harborline-pod-photos --prefix shipments/HL-2025-041/ --query 'Contents[].{Key:Key,Size:Size}' --output json",
+    "output": "Listed 1,248 objects under shipments/HL-2025-041/.",
+    "idempotent": true,
+    "verify_command": "aws s3api list-objects-v2 --bucket harborline-pod-photos --prefix shipments/HL-2025-041/ --query 'length(Contents || `[]`)' --output text"
+   },
+   {
+    "title": "Create Destination Photo Bucket",
+    "command": "aws s3api create-bucket --bucket harborline-pod-photos-v2 --region us-east-1 --create-bucket-configuration LocationConstraint=us-east-1",
+    "output": "Bucket harborline-pod-photos-v2 created in us-east-1.",
+    "idempotent": false,
+    "verify_command": "aws s3api head-bucket --bucket harborline-pod-photos-v2 --region us-east-1"
+   },
+   {
+    "title": "Enable Destination Object Versioning",
+    "command": "aws s3api put-bucket-versioning --bucket harborline-pod-photos-v2 --versioning-configuration Status=Enabled",
+    "output": "Versioning configuration: Enabled.",
+    "idempotent": true,
+    "verify_command": "aws s3api get-bucket-versioning --bucket harborline-pod-photos-v2 --query Status --output text"
+   },
+   {
+    "title": "Copy Photo Objects To Destination",
+    "command": "aws s3 sync s3://harborline-pod-photos/shipments/HL-2025-041/ s3://harborline-pod-photos-v2/shipments/HL-2025-041/ --copy-profiles default=storageClass:STANDARD,metadataDirective:COPY --only-show-errors",
+    "output": "Copied 1,248 objects; 0 errors.",
+    "idempotent": false,
+    "verify_command": "aws s3api list-objects-v2 --bucket harborline-pod-photos-v2 --prefix shipments/HL-2025-041/ --query 'length(Contents || `[]`)' --output text"
+   },
+   {
+    "title": "Update Shipment Photo References",
+    "command": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c \"UPDATE shipment_pod SET photo_bucket='harborline-pod-photos-v2', photo_prefix='shipments/HL-2025-041/' WHERE shipment_id IN ('SHP-0041-000001','SHP-0041-000002','SHP-0041-000003') AND photo_bucket='harborline-pod-photos';\"",
+    "output": "UPDATE 3",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT COUNT(*) FROM shipment_pod WHERE shipment_id IN ('SHP-0041-000001','SHP-0041-000002','SHP-0041-000003') AND photo_bucket='harborline-pod-photos-v2' AND photo_prefix='shipments/HL-2025-041/';\""
+   },
+   {
+    "title": "Publish Photo Migration Event",
+    "command": "curl -fsS -X POST \"$KAFKA_HTTP_GATEWAY/topics/harborline.photo-migration/events/HL-POD-2025-041\" -H 'Content-Type: application/json' -d '{\"event_id\":\"HL-POD-2025-041\",\"shipment_prefix\":\"HL-2025-041\",\"destination_bucket\":\"harborline-pod-photos-v2\",\"object_count\":1248}'",
+    "output": "202 Accepted; event HL-POD-2025-041 published.",
+    "idempotent": false,
+    "verify_command": "curl -fsS \"$KAFKA_HTTP_GATEWAY/topics/harborline.photo-migration/events/HL-POD-2025-041\""
+   },
+   {
+    "title": "Validate Signed Photo Access",
+    "command": "curl -fsS -o /dev/null -w '%{http_code} %{size_download}\\n' \"https://pod-media.harborline.internal/shipments/HL-2025-041/SHP-0041-000001/front-door.jpg\"",
+    "output": "200 482193",
+    "idempotent": true,
+    "verify_command": "curl -fsS -o /dev/null -w '%{http_code}\\n' \"https://pod-media.harborline.internal/shipments/HL-2025-041/SHP-0041-000001/front-door.jpg\""
+   },
+   {
+    "title": "Remove Legacy Photo Objects",
+    "command": "aws s3 rm s3://harborline-pod-photos/shipments/HL-2025-041/ --recursive --only-show-errors",
+    "output": "delete: s3://harborline-pod-photos/shipments/HL-2025-041/ (1,248 objects)",
+    "idempotent": false,
+    "verify_command": "aws s3api list-objects-v2 --bucket harborline-pod-photos --prefix shipments/HL-2025-041/ --query 'length(Contents || `[]`)' --output text"
+   }
+  ],
+  "id": "p008"
+ },
+ {
+  "name": "replacement_label_issue",
+  "goal": "Issue one replacement shipping label for shipment SHP-778812, update its tracking record, and notify the shipper exactly once.",
+  "steps": [
+   {
+    "title": "Check Shipment Label Eligibility",
+    "command": "psql \"$DATABASE_URL\" -Atc \"SELECT status, carrier, service_level, address_version FROM shipments WHERE shipment_id='SHP-778812';\"",
+    "output": "ready_to_ship|ups|ground|7",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT status FROM shipments WHERE shipment_id='SHP-778812';\""
+   },
+   {
+    "title": "Request Replacement Label From UPS",
+    "command": "curl -fsS -X POST \"$CARRIER_GATEWAY/v1/shipments/SHP-778812/replacement-labels\" -H 'Authorization: Bearer $CARRIER_GATEWAY_TOKEN' -H 'Content-Type: application/json' -d '{\"request_id\":\"HL-REPL-SHP-778812-01\",\"reason\":\"label_damaged\",\"old_tracking_number\":\"1Z999AA10123456784\"}'",
+    "output": "202 Accepted; UPS replacement request HL-REPL-SHP-778812-01 submitted.",
+    "idempotent": false,
+    "verify_command": "curl -fsS \"$CARRIER_GATEWAY/v1/shipment-requests/HL-REPL-SHP-778812-01\" -H 'Authorization: Bearer $CARRIER_GATEWAY_TOKEN'"
+   },
+   {
+    "title": "Enqueue Label PDF Generation",
+    "command": "redis-cli XADD harborline:jobs label-pdf '*' shipment_id SHP-778812 request_id HL-REPL-SHP-778812-01 carrier ups",
+    "output": "1768214400000-0",
+    "idempotent": false,
+    "verify_command": "redis-cli XLEN harborline:jobs"
+   },
+   {
+    "title": "Record Replacement Tracking Number",
+    "command": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c \"UPDATE shipments SET tracking_number='1Z999AA10123999912', replacement_of='1Z999AA10123456784', replacement_request_id='HL-REPL-SHP-778812-01', label_status='issued' WHERE shipment_id='SHP-778812' AND tracking_number='1Z999AA10123456784';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT tracking_number, label_status FROM shipments WHERE shipment_id='SHP-778812';\""
+   },
+   {
+    "title": "Invalidate Old Tracking Cache",
+    "command": "redis-cli SETEX shipment:SHP-778812:tracking 300 '{\"status\":\"label_replaced\",\"tracking_number\":\"1Z999AA10123999912\",\"effective_at\":\"2026-01-08T14:20:00Z\"}'",
+    "output": "OK",
+    "idempotent": true,
+    "verify_command": "redis-cli GET shipment:SHP-778812:tracking"
+   },
+   {
+    "title": "Publish Label Issued Event",
+    "command": "curl -fsS -X POST \"$KAFKA_HTTP_GATEWAY/topics/harborline.label-events/events/HL-LBL-SHP-778812-01\" -H 'Content-Type: application/json' -d '{\"event_id\":\"HL-LBL-SHP-778812-01\",\"shipment_id\":\"SHP-778812\",\"tracking_number\":\"1Z999AA10123999912\",\"old_tracking_number\":\"1Z999AA10123456784\",\"carrier\":\"ups\"}'",
+    "output": "202 Accepted; event HL-LBL-SHP-778812-01 published.",
+    "idempotent": false,
+    "verify_command": "curl -fsS \"$KAFKA_HTTP_GATEWAY/topics/harborline.label-events/events/HL-LBL-SHP-778812-01\""
+   },
+   {
+    "title": "Notify Shipment Operations Channel",
+    "command": "curl -fsS -X POST \"$SLACK_WEBHOOK_URL\" -H 'Content-Type: application/json' -d '{\"channel\":\"#hl-ops\",\"text\":\"Replacement label issued for SHP-778812: UPS tracking 1Z999AA10123999912. Request HL-REPL-SHP-778812-01.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS \"$SLACK_AUDIT_API/channels/hl-ops/messages?text=SHP-778812\" -H 'Authorization: Bearer $SLACK_AUDIT_TOKEN'"
+   },
+   {
+    "title": "Verify Label Download Endpoint",
+    "command": "curl -fsS -o /tmp/SHP-778812-replacement.pdf -w '%{http_code} %{content_type} %{size_download}\\n' \"https://labels.harborline.internal/shipments/SHP-778812/replacement.pdf\"",
+    "output": "200 application/pdf 18422",
+    "idempotent": true,
+    "verify_command": "curl -fsS -o /dev/null -w '%{http_code} %{content_type}\\n' \"https://labels.harborline.internal/shipments/SHP-778812/replacement.pdf\""
+   }
+  ],
+  "id": "p009"
+ },
+ {
+  "name": "rebill_corrected_freight_invoices",
+  "goal": "Create and distribute controlled billing adjustments for four corrected freight invoices without changing unrelated shipment records.",
+  "steps": [
+   {
+    "title": "Inspect corrected invoice batch",
+    "command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT invoice_id, shipment_id, correction_reason, correction_amount_cents FROM billing_corrections WHERE batch_id = 'hl-inv-2025-02-14' AND status = 'approved' ORDER BY invoice_id;\"",
+    "output": "INV-20481|SHP-77120|rate correction|12500",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM billing_corrections WHERE batch_id = 'hl-inv-2025-02-14' AND status = 'approved';\""
+   },
+   {
+    "title": "Check existing adjustment records",
+    "command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT invoice_id, count(*) FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14' GROUP BY invoice_id ORDER BY invoice_id;\"",
+    "output": "invoice_id|adjustment_count\nINV-20480|0\nINV-20481|0\nINV-20482|0\nINV-20483|0",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14';\""
+   },
+   {
+    "title": "Insert billing adjustment records",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"INSERT INTO invoice_adjustments (adjustment_id, batch_id, invoice_id, shipment_id, amount_cents, reason, created_by) SELECT 'ADJ-' || invoice_id, 'hl-inv-2025-02-14', invoice_id, shipment_id, correction_amount_cents, correction_reason, '@maya.chen' FROM billing_corrections WHERE batch_id = 'hl-inv-2025-02-14' AND status = 'approved';\"",
+    "output": "INSERT 0 4",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14' AND adjustment_id LIKE 'ADJ-%';\""
+   },
+   {
+    "title": "Mark adjustments ready to render",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"UPDATE invoice_adjustments SET render_status = 'queued' WHERE batch_id = 'hl-inv-2025-02-14' AND render_status = 'pending' AND adjustment_id IN ('ADJ-INV-20480','ADJ-INV-20481','ADJ-INV-20482','ADJ-INV-20483');\"",
+    "output": "UPDATE 4",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT adjustment_id, render_status FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14' ORDER BY adjustment_id;\""
+   },
+   {
+    "title": "Enqueue invoice rendering jobs",
+    "command": "redis-cli -n 0 RPUSH harborline:billing:render_jobs '{\"adjustment_id\":\"ADJ-INV-20480\",\"batch_id\":\"hl-inv-2025-02-14\"}' '{\"adjustment_id\":\"ADJ-INV-20481\",\"batch_id\":\"hl-inv-2025-02-14\"}' '{\"adjustment_id\":\"ADJ-INV-20482\",\"batch_id\":\"hl-inv-2025-02-14\"}' '{\"adjustment_id\":\"ADJ-INV-20483\",\"batch_id\":\"hl-inv-2025-02-14\"}'",
+    "output": "(integer) 4",
+    "idempotent": false,
+    "verify_command": "redis-cli -n 0 LLEN harborline:billing:render_jobs"
+   },
+   {
+    "title": "Publish billing ledger events",
+    "command": "for invoice in INV-20480 INV-20481 INV-20482 INV-20483; do kafka-console-producer.sh --bootstrap-server \"$KAFKA_BOOTSTRAP_SERVERS\" --topic harborline.billing.adjustments --property key.serializer=org.apache.kafka.common.serialization.StringSerializer --property value.serializer=org.apache.kafka.common.serialization.StringSerializer <<< \"{\\\"invoice_id\\\":\\\"$invoice\\\",\\\"batch_id\\\":\\\"hl-inv-2025-02-14\\\",\\\"event_type\\\":\\\"invoice_adjustment_created\\\"}\"; done",
+    "output": "Produced 4 messages to harborline.billing.adjustments",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer.sh --bootstrap-server \"$KAFKA_BOOTSTRAP_SERVERS\" --topic harborline.billing.adjustments --from-beginning --timeout-ms 3000 --property print.key=true --property print.value=true | grep -c 'hl-inv-2025-02-14'"
+   },
+   {
+    "title": "Notify accounts receivable",
+    "command": "for invoice in INV-20480 INV-20481 INV-20482 INV-20483; do curl -fsS -X POST https://hooks.slack.com/services/$SLACK_BILLING_WEBHOOK -H 'Content-Type: application/json' --data \"{\\\"channel\\\":\\\"#hl-billing\\\",\\\"text\\\":\\\"Corrected invoice $invoice is being rebilled; batch hl-inv-2025-02-14.\\\"}\" >/dev/null; done",
+    "output": "4 Slack notifications sent to #hl-billing",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=$HL_BILLING_CHANNEL_ID&limit=20' -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" | jq '[.messages[] | select(.text | contains(\"hl-inv-2025-02-14\"))] | length'"
+   },
+   {
+    "title": "Confirm billing batch completion",
+    "command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT batch_id, count(*) AS adjustments, count(*) FILTER (WHERE render_status IN ('rendered','sent')) AS completed FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14' GROUP BY batch_id;\"",
+    "output": "hl-inv-2025-02-14|4|4",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM invoice_adjustments WHERE batch_id = 'hl-inv-2025-02-14' AND render_status IN ('rendered','sent');\""
+   }
+  ],
+  "id": "p010"
+ },
+ {
+  "name": "reprocess_stuck_eta_jobs",
+  "goal": "Reprocess the identified stuck ETA recomputation jobs for the HL-2025-02-14 Northwind carrier backlog and verify completion.",
+  "steps": [
+   {
+    "title": "List stuck ETA jobs",
+    "command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT job_id, shipment_id, carrier_code, attempt_count, stuck_since FROM eta_recompute_jobs WHERE queue = 'northwind-eta' AND status = 'stuck' AND stuck_since < '2025-02-14 18:00:00+00' ORDER BY job_id LIMIT 100;\"",
+    "output": "ETA-90031|SHP-77120|NW|3|2025-02-14 16:42:00+00",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM eta_recompute_jobs WHERE queue = 'northwind-eta' AND status = 'stuck' AND stuck_since < '2025-02-14 18:00:00+00';\""
+   },
+   {
+    "title": "Check carrier outage mapping",
+    "command": "curl -fsS https://carrier-status.northwind.example/v1/incidents/NW-ETA-442 | jq '{incident_id,status,affected_scac,resolved_at}'",
+    "output": "{\"incident_id\":\"NW-ETA-442\",\"status\":\"resolved\",\"affected_scac\":\"NW\",\"resolved_at\":\"2025-02-14T19:05:00Z\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://carrier-status.northwind.example/v1/incidents/NW-ETA-442 | jq -r '.status + \" \" + .resolved_at'"
+   },
+   {
+    "title": "Create ETA reprocessing runs",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"INSERT INTO eta_recompute_runs (run_id, job_id, run_reason, requested_by) SELECT 'RUN-' || job_id || '-R2', job_id, 'Northwind incident NW-ETA-442 resolved', '@j.ortiz' FROM eta_recompute_jobs WHERE queue = 'northwind-eta' AND status = 'stuck' AND stuck_since < '2025-02-14 18:00:00+00';\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM eta_recompute_runs WHERE run_reason = 'Northwind incident NW-ETA-442 resolved' AND requested_by = '@j.ortiz';\""
+   },
+   {
+    "title": "Enqueue duplicate-safe work items",
+    "command": "for job in ETA-90031; do redis-cli -n 0 RPUSH harborline:eta:recompute \"{\\\"job_id\\\":\\\"$job\\\",\\\"run_id\\\":\\\"RUN-$job-R2\\\",\\\"carrier_code\\\":\\\"NW\\\",\\\"reason\\\":\\\"NW-ETA-442-resolved\\\"}\"; done",
+    "output": "(integer) 1",
+    "idempotent": false,
+    "verify_command": "redis-cli -n 0 LLEN harborline:eta:recompute"
+   },
+   {
+    "title": "Publish ETA retry notifications",
+    "command": "kafka-console-producer.sh --bootstrap-server \"$KAFKA_BOOTSTRAP_SERVERS\" --topic harborline.tracking.eta-retry --property key.serializer=org.apache.kafka.common.serialization.StringSerializer --property value.serializer=org.apache.kafka.common.serialization.StringSerializer <<< '{\"job_id\":\"ETA-90031\",\"run_id\":\"RUN-ETA-90031-R2\",\"event\":\"eta_recompute_enqueued\",\"carrier_code\":\"NW\"}'",
+    "output": "Produced 1 message to harborline.tracking.eta-retry",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer.sh --bootstrap-server \"$KAFKA_BOOTSTRAP_SERVERS\" --topic harborline.tracking.eta-retry --from-beginning --timeout-ms 3000 | grep -c 'RUN-ETA-90031-R2'"
+   },
+   {
+    "title": "Mark source jobs processing",
+    "command": "psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c \"UPDATE eta_recompute_jobs SET status = 'processing', last_run_id = 'RUN-' || job_id || '-R2', updated_at = now() WHERE job_id = 'ETA-90031' AND status = 'stuck';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT job_id, status, last_run_id FROM eta_recompute_jobs WHERE job_id = 'ETA-90031';\""
+   },
+   {
+    "title": "Notify tracking operations",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/$SLACK_TRACKING_WEBHOOK -H 'Content-Type: application/json' --data '{\"channel\":\"#hl-tracking-ops\",\"text\":\"ETA recomputation RUN-ETA-90031-R2 enqueued for ETA-90031 after NW-ETA-442 resolved.\"}' >/dev/null && echo '1 Slack notification sent to #hl-tracking-ops'",
+    "output": "1 Slack notification sent to #hl-tracking-ops",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=$HL_TRACKING_CHANNEL_ID&limit=20' -H \"Authorization: Bearer $SLACK_BOT_TOKEN\" | jq '[.messages[] | select(.text | contains(\"RUN-ETA-90031-R2\"))] | length'"
+   },
+   {
+    "title": "Verify ETA worker results",
+    "command": "psql \"$DATABASE_URL\" -X -A -F '|' -c \"SELECT j.job_id, j.status, r.run_id, r.completed_at, r.eta_calculated FROM eta_recompute_jobs j JOIN eta_recompute_runs r ON r.run_id = j.last_run_id WHERE j.job_id = 'ETA-90031';\"",
+    "output": "ETA-90031|completed|RUN-ETA-90031-R2|2025-02-14 19:18:42+00|2025-02-15 08:30:00+00",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -X -A -t -c \"SELECT count(*) FROM eta_recompute_runs WHERE run_id = 'RUN-ETA-90031-R2' AND status = 'completed';\""
+   }
+  ],
+  "id": "p011"
+ },
+ {
+  "name": "release_shipments_api_4_8_2_staging",
+  "goal": "Release shipments-api version 4.8.2 to the harborline staging environment and verify its health.",
+  "steps": [
+   {
+    "title": "Check staging release branch",
+    "command": "git -C /srv/harborline/shipments-api fetch origin && git -C /srv/harborline/shipments-api status --short --branch",
+    "output": "## release/4.8.2...origin/release/4.8.2",
+    "idempotent": true,
+    "verify_command": "git -C /srv/harborline/shipments-api rev-parse --abbrev-ref HEAD"
+   },
+   {
+    "title": "Verify tagged build artifact",
+    "command": "test \"$(sha256sum /srv/harborline/artifacts/shipments-api-4.8.2.tar.gz | cut -d' ' -f1)\" = \"b8d7a9c0f3e24a1d9b6f4e2c7a5d8f1e3b9c6a2d4f7e0c1b8a5d2e9f6c3a7b1d0\" && echo artifact-sha256-ok",
+    "output": "artifact-sha256-ok",
+    "idempotent": true,
+    "verify_command": "sha256sum /srv/harborline/artifacts/shipments-api-4.8.2.tar.gz"
+   },
+   {
+    "title": "Register staging release record",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO shipment_api_releases (release_id, service, version, environment, created_by) VALUES ('rel-20250308-482', 'shipments-api', '4.8.2', 'staging', '@maya.chen');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM shipment_api_releases WHERE release_id='rel-20250308-482';\""
+   },
+   {
+    "title": "Deploy staging Helm revision",
+    "command": "helm upgrade --install shipments-api /srv/harborline/deploy/shipments-api --namespace staging --set image.tag=4.8.2 --atomic --timeout 5m",
+    "output": "Release shipments-api upgraded to revision 318 and is ready.",
+    "idempotent": true,
+    "verify_command": "kubectl get deployment shipments-api -n staging -o jsonpath='{.spec.template.spec.containers[0].image}'"
+   },
+   {
+    "title": "Apply database migration",
+    "command": "kubectl exec -n staging deploy/shipments-api -- alembic upgrade 4.8.2",
+    "output": "Running upgrade 4.8.1 -> 4.8.2",
+    "idempotent": true,
+    "verify_command": "kubectl exec -n staging deploy/shipments-api -- alembic current"
+   },
+   {
+    "title": "Enqueue staging smoke jobs",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO shipment_ingest_jobs (job_id, shipment_id, source, requested_by) VALUES ('job-hl-82031', 'SHP-100482', 'staging-smoke', '@maya.chen'), ('job-hl-82032', 'SHP-100483', 'staging-smoke', '@maya.chen');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM shipment_ingest_jobs WHERE job_id IN ('job-hl-82031','job-hl-82032') AND status='queued';\""
+   },
+   {
+    "title": "Publish staging release notice",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04HL/B08HL2025/9f3c2a7e1d4b6c8a0e2f5b7d9c1a3e4f -H 'Content-Type: application/json' --data '{\"channel\":\"#hl-shipments-api\",\"text\":\"shipments-api 4.8.2 is deployed to staging; smoke jobs job-hl-82031 and job-hl-82032 were queued.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04HL2025&limit=20' -H 'Authorization: Bearer xoxb-harborline-staging' | jq -r '.messages[] | select(.text | contains(\"shipments-api 4.8.2 is deployed to staging\")) | .ts'"
+   },
+   {
+    "title": "Check staging health endpoint",
+    "command": "curl -fsS https://staging.harborline.example/shipments-api/health",
+    "output": "{\"service\":\"shipments-api\",\"version\":\"4.8.2\",\"status\":\"ok\"}",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://staging.harborline.example/shipments-api/health | jq -r '.status + \" \" + .version'"
+   }
+  ],
+  "id": "p012"
+ },
+ {
+  "name": "void_duplicate_labels_4827",
+  "goal": "Void duplicate labels 4827 and 4828 with the carrier after confirming shipment 100482 has one authoritative label.",
+  "steps": [
+   {
+    "title": "List labels for shipment",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT label_id, carrier, status, created_at FROM shipment_labels WHERE shipment_id='SHP-100482' ORDER BY created_at;\"",
+    "output": "4827 | FREIGHTX | issued | 2025-03-08 09:14 UTC\n4828 | FREIGHTX | issued | 2025-03-08 09:15 UTC",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM shipment_labels WHERE shipment_id='SHP-100482' AND status='issued';\""
+   },
+   {
+    "title": "Confirm carrier account status",
+    "command": "curl -fsS https://api.freightx.example/v1/accounts/acct-hl-20481/status -H 'Authorization: Bearer freightx-hl-staging' | jq -e '.status == \"active\"'",
+    "output": "true",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://api.freightx.example/v1/accounts/acct-hl-20481/status -H 'Authorization: Bearer freightx-hl-staging' | jq -r '.status'"
+   },
+   {
+    "title": "Create carrier void request",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO label_void_requests (request_id, shipment_id, label_ids, carrier, requested_by) VALUES ('void-req-20250308-4827', 'SHP-100482', ARRAY['4827','4828'], 'FREIGHTX', '@jordan.lee');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM label_void_requests WHERE request_id='void-req-20250308-4827';\""
+   },
+   {
+    "title": "Submit carrier label voids",
+    "command": "curl -fsS -X POST https://api.freightx.example/v1/labels/void -H 'Authorization: Bearer freightx-hl-staging' -H 'Content-Type: application/json' --data '{\"account_id\":\"acct-hl-20481\",\"shipment_id\":\"SHP-100482\",\"label_ids\":[\"4827\",\"4828\"],\"request_id\":\"void-req-20250308-4827\"}'",
+    "output": "{\"request_id\":\"void-req-20250308-4827\",\"status\":\"accepted\",\"label_ids\":[\"4827\",\"4828\"]}",
+    "idempotent": false,
+    "verify_command": "curl -fsS https://api.freightx.example/v1/labels/void/void-req-20250308-4827 -H 'Authorization: Bearer freightx-hl-staging' | jq -r '.status'"
+   },
+   {
+    "title": "Record carrier void response",
+    "command": "psql \"$DATABASE_URL\" -c \"INSERT INTO label_void_events (event_id, request_id, carrier_reference, payload, recorded_by) VALUES ('void-evt-90031', 'void-req-20250308-4827', 'fx-void-771204', '{\\\"status\\\":\\\"accepted\\\",\\\"label_ids\\\":[\\\"4827\\\",\\\"4828\\\"]}', '@jordan.lee');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM label_void_events WHERE event_id='void-evt-90031';\""
+   },
+   {
+    "title": "Mark labels voided locally",
+    "command": "psql \"$DATABASE_URL\" -c \"UPDATE shipment_labels SET status='voided', void_request_id='void-req-20250308-4827', updated_at=now() WHERE shipment_id='SHP-100482' AND label_id IN ('4827','4828') AND status='issued';\"",
+    "output": "UPDATE 2",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT string_agg(label_id || ':' || status, ',' ORDER BY label_id) FROM shipment_labels WHERE shipment_id='SHP-100482' AND label_id IN ('4827','4828');\""
+   },
+   {
+    "title": "Notify freight operations channel",
+    "command": "curl -fsS -X POST https://hooks.slack.com/services/T04HL/B08HLOPS/4a8d1e7c9b2f6035a1c8e4d7b9f2053 -H 'Content-Type: application/json' --data '{\"channel\":\"#hl-freight-ops\",\"text\":\"Carrier FREIGHTX accepted void request void-req-20250308-4827 for duplicate labels 4827 and 4828 on SHP-100482.\"}'",
+    "output": "ok",
+    "idempotent": false,
+    "verify_command": "curl -fsS 'https://slack.com/api/conversations.history?channel=C04HLOPS&limit=20' -H 'Authorization: Bearer xoxb-harborline-ops' | jq -r '.messages[] | select(.text | contains(\"void-req-20250308-4827\")) | .ts'"
+   },
+   {
+    "title": "Verify final label status",
+    "command": "psql \"$DATABASE_URL\" -c \"SELECT l.label_id, l.status, v.carrier_reference FROM shipment_labels l JOIN label_void_requests v ON v.request_id=l.void_request_id WHERE l.shipment_id='SHP-100482' AND l.label_id IN ('4827','4828') ORDER BY l.label_id;\"",
+    "output": "4827 | voided | fx-void-771204\n4828 | voided | fx-void-771204",
+    "idempotent": true,
+    "verify_command": "psql \"$DATABASE_URL\" -Atc \"SELECT count(*) FROM shipment_labels WHERE shipment_id='SHP-100482' AND label_id IN ('4827','4828') AND status='voided';\""
+   }
+  ],
+  "id": "p013"
+ },
+ {
+  "name": "resend_customs_documents_to_brokers",
+  "goal": "Resend the corrected customs document package for shipment HL-20481 to both assigned brokers and record the transmission in the shipment audit trail.",
+  "steps": [
+   {
+    "title": "Check Shipment Customs Status",
+    "command": "psql -d harborline -c \"SELECT shipment_id, customs_status, broker_id FROM shipments WHERE shipment_id = 'HL-20481';\"",
+    "output": " shipment_id | customs_status | broker_id\n-------------+----------------+-----------\n HL-20481   | NEEDS_RESEND   | BR-AMS-07",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT customs_status FROM shipments WHERE shipment_id = 'HL-20481';\""
+   },
+   {
+    "title": "List Corrected Customs Documents",
+    "command": "psql -d harborline -c \"SELECT document_id, filename, sha256 FROM customs_documents WHERE shipment_id = 'HL-20481' AND version = 3 ORDER BY document_id;\"",
+    "output": " document_id | filename                 | sha256\n-------------+---------------------------+----------------------------------\n CD-771      | commercial_invoice_v3.pdf | 8f1c2a9d4e7b6a1c0d3e5f6a7b8c9d0e\n CD-772      | packing_list_v3.pdf       | 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) AS corrected_document_count FROM customs_documents WHERE shipment_id = 'HL-20481' AND version = 3;\""
+   },
+   {
+    "title": "Send Documents To Amsterdam Broker",
+    "command": "curl --fail-with-body -X POST 'https://broker-gateway.harborline.internal/v1/brokers/BR-AMS-07/resend' -H 'Content-Type: application/json' -H 'Idempotency-Key: resend-HL-20481-v3-ams' --data '{\"shipment_id\":\"HL-20481\",\"document_version\":3,\"reason\":\"corrected customs package\"}'",
+    "output": "{\"status\":\"accepted\",\"broker_id\":\"BR-AMS-07\",\"shipment_id\":\"HL-20481\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -s 'https://broker-gateway.harborline.internal/v1/brokers/BR-AMS-07/transmissions?shipment_id=HL-20481&document_version=3' | jq '.items | map(select(.reason == \"corrected customs package\")) | length'"
+   },
+   {
+    "title": "Mark Amsterdam Resend Submitted",
+    "command": "psql -d harborline -c \"UPDATE shipments SET customs_status = 'RESEND_SUBMITTED', updated_at = now() WHERE shipment_id = 'HL-20481' AND broker_id = 'BR-AMS-07';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT customs_status, updated_at FROM shipments WHERE shipment_id = 'HL-20481';\""
+   },
+   {
+    "title": "Send Documents To Rotterdam Broker",
+    "command": "curl --fail-with-body -X POST 'https://broker-gateway.harborline.internal/v1/brokers/BR-RTM-03/resend' -H 'Content-Type: application/json' -H 'Idempotency-Key: resend-HL-20481-v3-rtm' --data '{\"shipment_id\":\"HL-20481\",\"document_version\":3,\"reason\":\"corrected customs package\"}'",
+    "output": "{\"status\":\"accepted\",\"broker_id\":\"BR-RTM-03\",\"shipment_id\":\"HL-20481\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -s 'https://broker-gateway.harborline.internal/v1/brokers/BR-RTM-03/transmissions?shipment_id=HL-20481&document_version=3' | jq '.items | map(select(.reason == \"corrected customs package\")) | length'"
+   },
+   {
+    "title": "Mark Rotterdam Resend Submitted",
+    "command": "psql -d harborline -c \"UPDATE shipments SET customs_status = 'RESENT_TO_BROKERS', updated_at = now() WHERE shipment_id = 'HL-20481' AND broker_id = 'BR-RTM-03';\"",
+    "output": "UPDATE 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT customs_status, updated_at FROM shipments WHERE shipment_id = 'HL-20481';\""
+   },
+   {
+    "title": "Record Customs Resend Audit Entry",
+    "command": "psql -d harborline -c \"INSERT INTO shipment_audit_log (shipment_id, event_type, actor, details) VALUES ('HL-20481', 'CUSTOMS_DOCUMENTS_RESENT', 'ops-agent-17', '{\\\"document_version\\\":3,\\\"brokers\\\":[\\\"BR-AMS-07\\\",\\\"BR-RTM-03\\\"]}');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) FROM shipment_audit_log WHERE shipment_id = 'HL-20481' AND event_type = 'CUSTOMS_DOCUMENTS_RESENT' AND actor = 'ops-agent-17';\""
+   },
+   {
+    "title": "Confirm Final Customs State",
+    "command": "psql -d harborline -c \"SELECT shipment_id, customs_status, updated_at FROM shipments WHERE shipment_id = 'HL-20481';\"",
+    "output": " shipment_id | customs_status    | updated_at\n-------------+------------------+-----------------------------\n HL-20481   | RESENT_TO_BROKERS | 2025-02-14 10:18:42.118+00",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT customs_status = 'RESENT_TO_BROKERS' AS complete FROM shipments WHERE shipment_id = 'HL-20481';\""
+   }
+  ],
+  "id": "p014"
+ },
+ {
+  "name": "append_corrected_tracking_events",
+  "goal": "Append four corrected tracking events for shipment HL-20481 to the immutable ledger, publish the correction notification, and confirm the new ledger tip.",
+  "steps": [
+   {
+    "title": "Inspect Current Tracking Ledger",
+    "command": "psql -d harborline -c \"SELECT sequence_no, event_type, event_time FROM tracking_ledger WHERE shipment_id = 'HL-20481' ORDER BY sequence_no DESC LIMIT 5;\"",
+    "output": " sequence_no | event_type             | event_time\n-------------+------------------------+-------------------------\n        8412 | CUSTOMS_CLEARED         | 2025-02-14 09:41:00+00\n        8411 | BROKER_DOCUMENT_RECEIVED | 2025-02-14 09:39:12+00",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT COALESCE(MAX(sequence_no), 0) AS ledger_tip FROM tracking_ledger WHERE shipment_id = 'HL-20481';\""
+   },
+   {
+    "title": "Check For Existing Corrections",
+    "command": "psql -d harborline -c \"SELECT COUNT(*) AS existing_corrections FROM tracking_correction_batches WHERE shipment_id = 'HL-20481' AND correction_version = 2;\"",
+    "output": " existing_corrections\n---------------------\n                  0",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT correction_version, status FROM tracking_correction_batches WHERE shipment_id = 'HL-20481' AND correction_version = 2;\""
+   },
+   {
+    "title": "Append Gate-Out Correction",
+    "command": "psql -d harborline -c \"INSERT INTO tracking_ledger (shipment_id, sequence_no, event_type, event_time, location, source, correction_version) VALUES ('HL-20481', 8413, 'GATE_OUT', '2025-02-14T10:05:00Z', 'RTM Terminal 2', 'carrier-gateway', 2);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) FROM tracking_ledger WHERE shipment_id = 'HL-20481' AND sequence_no = 8413 AND event_type = 'GATE_OUT' AND correction_version = 2;\""
+   },
+   {
+    "title": "Append Loaded-On-Carrier Event",
+    "command": "psql -d harborline -c \"INSERT INTO tracking_ledger (shipment_id, sequence_no, event_type, event_time, location, source, correction_version) VALUES ('HL-20481', 8414, 'LOADED_ON_CARRIER', '2025-02-14T10:27:00Z', 'RTM Terminal 2', 'carrier-gateway', 2);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) FROM tracking_ledger WHERE shipment_id = 'HL-20481' AND sequence_no = 8414 AND event_type = 'LOADED_ON_CARRIER' AND correction_version = 2;\""
+   },
+   {
+    "title": "Append Vessel-Departure Event",
+    "command": "psql -d harborline -c \"INSERT INTO tracking_ledger (shipment_id, sequence_no, event_type, event_time, location, source, correction_version) VALUES ('HL-20481', 8415, 'VESSEL_DEPARTED', '2025-02-14T12:10:00Z', 'Rotterdam Anchorage', 'tracking-ingest', 2);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) FROM tracking_ledger WHERE shipment_id = 'HL-20481' AND sequence_no = 8415 AND event_type = 'VESSEL_DEPARTED' AND correction_version = 2;\""
+   },
+   {
+    "title": "Append Estimated-Arrival Event",
+    "command": "psql -d harborline -c \"INSERT INTO tracking_ledger (shipment_id, sequence_no, event_type, event_time, location, source, correction_version) VALUES ('HL-20481', 8416, 'ETA_UPDATED', '2025-02-15T06:30:00Z', 'Felixstowe Discharge Yard', 'tracking-ingest', 2);\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -d harborline -c \"SELECT COUNT(*) FROM tracking_ledger WHERE shipment_id = 'HL-20481' AND sequence_no = 8416 AND event_type = 'ETA_UPDATED' AND correction_version = 2;\""
+   },
+   {
+    "title": "Publish Correction Notification",
+    "command": "printf '%s\\n' '{\"shipment_id\":\"HL-20481\",\"correction_version\":2,\"event_count\":4,\"ledger_tip\":8416}' | kafka-console-producer --bootstrap-server kafka.harborline.internal:9092 --topic tracking.corrections",
+    "output": "{\"shipment_id\":\"HL-20481\",\"correction_version\":2,\"event_count\":4,\"ledger_tip\":8416}",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer --bootstrap-server kafka.harborline.internal:9092 --topic tracking.corrections --from-beginning --max-messages 20 --timeout-ms 5000 | jq -c 'select(.shipment_id == \"HL-20481\" and .correction_version == 2)'"
+   },
+   {
+    "title": "Verify Corrected Ledger Tip",
+    "command": "psql -d harborline -c \"SELECT MAX(sequence_no) AS ledger_tip, COUNT(*) FILTER (WHERE correction_version = 2) AS correction_events FROM tracking_ledger WHERE shipment_id = 'HL-20481';\"",
+    "output": " ledger_tip | correction_events\n------------+-------------------\n       8416 |                4",
+    "idempotent": true,
+    "verify_command": "psql -d harborline -c \"SELECT MAX(sequence_no) AS ledger_tip, COUNT(*) FILTER (WHERE correction_version = 2) AS correction_events FROM tracking_ledger WHERE shipment_id = 'HL-20481';\""
+   }
+  ],
+  "id": "p015"
+ },
+ {
+  "name": "roll_shipment_kafka_schema_v2",
+  "goal": "Roll the shipment event stream from schema v1 to schema v2, reprocess the backlog, and retire the old topic after consumers are cut over.",
+  "steps": [
+   {
+    "title": "Inspect Current Topic Versions",
+    "command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --describe --topic hl-shipments.v1",
+    "output": "Topic: hl-shipments.v1  PartitionCount: 12  ReplicationFactor: 3",
+    "idempotent": true,
+    "verify_command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --describe --topic hl-shipments.v1 | head -n 1"
+   },
+   {
+    "title": "Create Schema V2 Topic",
+    "command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --create --if-not-exists --topic hl-shipments.v2 --partitions 12 --replication-factor 3 --config cleanup.policy=delete",
+    "output": "Created topic hl-shipments.v2.",
+    "idempotent": true,
+    "verify_command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --list | grep -x hl-shipments.v2"
+   },
+   {
+    "title": "Publish Schema V2 Sample",
+    "command": "printf 'evt-2025-03-08-0001|{\"event_id\":\"evt-2025-03-08-0001\",\"schema\":2,\"shipment_id\":\"SHP-78421\",\"status\":\"IN_TRANSIT\"}\\n' | kafka-console-producer --bootstrap-server kafka-0.harborline.internal:9092 --topic hl-shipments.v2 --property parse.key=true --property key.separator='|'",
+    "output": "Published one keyed shipment event to hl-shipments.v2.",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer --bootstrap-server kafka-0.harborline.internal:9092 --topic hl-shipments.v2 --from-beginning --max-messages 1 --timeout-ms 5000"
+   },
+   {
+    "title": "Enqueue Backlog Reprocessing Job",
+    "command": "printf '{\"job_id\":\"reprocess-shipments-v2-20250308\",\"source_topic\":\"hl-shipments.v1\",\"target_topic\":\"hl-shipments.v2\",\"batch_date\":\"2025-03-08\"}\\n' | kafka-console-producer --bootstrap-server kafka-0.harborline.internal:9092 --topic hl-reprocessing.jobs",
+    "output": "Published reprocess-shipments-v2-20250308 to hl-reprocessing.jobs.",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer --bootstrap-server kafka-0.harborline.internal:9092 --topic hl-reprocessing.jobs --from-beginning --timeout-ms 5000 | grep reprocess-shipments-v2-20250308"
+   },
+   {
+    "title": "Point Ingest Service At V2",
+    "command": "kubectl -n harborline set env deployment/tracking-ingest KAFKA_SHIPMENT_TOPIC=hl-shipments.v2",
+    "output": "deployment/tracking-ingest updated: KAFKA_SHIPMENT_TOPIC=hl-shipments.v2",
+    "idempotent": true,
+    "verify_command": "kubectl -n harborline get deployment tracking-ingest -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name==\"KAFKA_SHIPMENT_TOPIC\")].value}'"
+   },
+   {
+    "title": "Retire Legacy Shipment Topic",
+    "command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --delete --topic hl-shipments.v1",
+    "output": "Deleted topic hl-shipments.v1.",
+    "idempotent": false,
+    "verify_command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --list | grep -x hl-shipments.v1"
+   },
+   {
+    "title": "Verify Tracking Ingest Rollout",
+    "command": "kubectl -n harborline rollout status deployment/tracking-ingest --timeout=180s",
+    "output": "deployment \"tracking-ingest\" successfully rolled out",
+    "idempotent": true,
+    "verify_command": "kubectl -n harborline get pods -l app=tracking-ingest -o jsonpath='{range .items[*]}{.status.phase}{\"\\n\"}{end}'"
+   },
+   {
+    "title": "Confirm V2 Topic Metadata",
+    "command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --describe --topic hl-shipments.v2",
+    "output": "Topic: hl-shipments.v2  PartitionCount: 12  ReplicationFactor: 3",
+    "idempotent": true,
+    "verify_command": "kafka-topics --bootstrap-server kafka-0.harborline.internal:9092 --describe --topic hl-shipments.v2 | grep -E 'PartitionCount|ReplicationFactor'"
+   }
+  ],
+  "id": "p016"
+ },
+ {
+  "name": "email_monthly_sla_reports",
+  "goal": "Generate and email the February 2025 SLA reports for two Harborline customers, then record the delivery in the reporting ledger.",
+  "steps": [
+   {
+    "title": "Check February SLA Metrics",
+    "command": "psql -h harborline-prod.internal -U reporting -d harborline -c \"SELECT customer_id, COUNT(*) AS shipments, ROUND(AVG(delivery_minutes)::numeric, 1) AS avg_minutes FROM shipment_sla_metrics WHERE report_month = DATE '2025-02-01' AND customer_id IN ('CUST-1042','CUST-1077') GROUP BY customer_id ORDER BY customer_id;\"",
+    "output": " customer_id | shipments | avg_minutes\n-------------+-----------+-------------\n CUST-1042   |       184 |        31.6\n CUST-1077   |        96 |        28.9",
+    "idempotent": true,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT COUNT(*) FROM shipment_sla_metrics WHERE report_month = DATE '2025-02-01' AND customer_id IN ('CUST-1042','CUST-1077');\""
+   },
+   {
+    "title": "Render Customer SLA Reports",
+    "command": "for customer_id in CUST-1042 CUST-1077; do python3 /opt/harborline/reports/render_sla.py --month 2025-02 --customer-id \"$customer_id\" --output \"/tmp/harborline-sla-${customer_id}-2025-02.txt\"; done",
+    "output": "Rendered /tmp/harborline-sla-CUST-1042-2025-02.txt and /tmp/harborline-sla-CUST-1077-2025-02.txt.",
+    "idempotent": true,
+    "verify_command": "test -s /tmp/harborline-sla-CUST-1042-2025-02.txt && test -s /tmp/harborline-sla-CUST-1077-2025-02.txt && printf 'both SLA report files present\\n'"
+   },
+   {
+    "title": "Email Northstar SLA Report",
+    "command": "cat /tmp/harborline-sla-CUST-1042-2025-02.txt | /usr/sbin/sendmail -t",
+    "output": "Queued SLA report email for CUST-1042.",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT COUNT(*) FROM customer_report_deliveries WHERE customer_id = 'CUST-1042' AND report_month = DATE '2025-02-01';\""
+   },
+   {
+    "title": "Record Northstar Delivery",
+    "command": "psql -h harborline-prod.internal -U reporting -d harborline -c \"INSERT INTO customer_report_deliveries (customer_id, report_month, delivered_at, message_subject) VALUES ('CUST-1042', DATE '2025-02-01', NOW(), 'Harborline February 2025 SLA Report');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT customer_id || ':' || report_month FROM customer_report_deliveries WHERE customer_id = 'CUST-1042' AND report_month = DATE '2025-02-01';\""
+   },
+   {
+    "title": "Email Bluepeak SLA Report",
+    "command": "cat /tmp/harborline-sla-CUST-1077-2025-02.txt | /usr/sbin/sendmail -t",
+    "output": "Queued SLA report email for CUST-1077.",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT COUNT(*) FROM customer_report_deliveries WHERE customer_id = 'CUST-1077' AND report_month = DATE '2025-02-01';\""
+   },
+   {
+    "title": "Record Bluepeak Delivery",
+    "command": "psql -h harborline-prod.internal -U reporting -d harborline -c \"INSERT INTO customer_report_deliveries (customer_id, report_month, delivered_at, message_subject) VALUES ('CUST-1077', DATE '2025-02-01', NOW(), 'Harborline February 2025 SLA Report');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT customer_id || ':' || report_month FROM customer_report_deliveries WHERE customer_id = 'CUST-1077' AND report_month = DATE '2025-02-01';\""
+   },
+   {
+    "title": "Close February Reporting Batch",
+    "command": "psql -h harborline-prod.internal -U reporting -d harborline -c \"INSERT INTO reporting_batch_ledger (batch_name, report_month, closed_at) VALUES ('monthly-sla-2025-02', DATE '2025-02-01', NOW());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT COUNT(*) FROM reporting_batch_ledger WHERE batch_name = 'monthly-sla-2025-02';\""
+   },
+   {
+    "title": "Verify Both Customer Deliveries",
+    "command": "psql -h harborline-prod.internal -U reporting -d harborline -c \"SELECT customer_id, report_month, delivered_at FROM customer_report_deliveries WHERE report_month = DATE '2025-02-01' AND customer_id IN ('CUST-1042','CUST-1077') ORDER BY customer_id;\"",
+    "output": "CUST-1042 | 2025-02-01 | 2025-03-08 09:14:22+00\nCUST-1077 | 2025-02-01 | 2025-03-08 09:14:25+00",
+    "idempotent": true,
+    "verify_command": "psql -h harborline-prod.internal -U reporting -d harborline -Atc \"SELECT COUNT(*) FROM customer_report_deliveries WHERE report_month = DATE '2025-02-01' AND customer_id IN ('CUST-1042','CUST-1077');\""
+   }
+  ],
+  "id": "p017"
+ },
+ {
+  "name": "create_backlog_pickup_requests",
+  "goal": "Create carrier pickup requests for the unresolved shipment backlog and verify that each request was accepted exactly once.",
+  "steps": [
+   {
+    "title": "Inspect backlog shipments",
+    "command": "psql -h localhost -U harborline -d shipments -c \"SELECT shipment_id, carrier_code, pickup_due_at FROM shipments WHERE status = 'backlog' AND pickup_request_id IS NULL ORDER BY pickup_due_at LIMIT 20;\"",
+    "output": "20 backlog shipments listed",
+    "idempotent": true,
+    "verify_command": "psql -h localhost -U harborline -d shipments -tAc \"SELECT count(*) FROM shipments WHERE status = 'backlog' AND pickup_request_id IS NULL;\""
+   },
+   {
+    "title": "Validate carrier credentials",
+    "command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/carriers/CASCADEFREIGHT/credentials/status",
+    "output": "CASCADEFREIGHT credentials active",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/carriers/CASCADEFREIGHT/credentials/status"
+   },
+   {
+    "title": "Create first pickup request",
+    "command": "curl -fsS -X POST https://carrier-gateway.internal/v1/pickup-requests -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" -H 'Content-Type: application/json' -d '{\"request_key\":\"backlog-2025-02-14-SHP-10481\",\"shipment_id\":\"SHP-10481\",\"carrier_code\":\"CASCADEFREIGHT\",\"pickup_date\":\"2025-02-17\"}'",
+    "output": "Pickup request PR-88421 created",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/v1/pickup-requests/backlog-2025-02-14-SHP-10481"
+   },
+   {
+    "title": "Create second pickup request",
+    "command": "curl -fsS -X POST https://carrier-gateway.internal/v1/pickup-requests -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" -H 'Content-Type: application/json' -d '{\"request_key\":\"backlog-2025-02-14-SHP-10482\",\"shipment_id\":\"SHP-10482\",\"carrier_code\":\"CASCADEFREIGHT\",\"pickup_date\":\"2025-02-17\"}'",
+    "output": "Pickup request PR-88422 created",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/v1/pickup-requests/backlog-2025-02-14-SHP-10482"
+   },
+   {
+    "title": "Create third pickup request",
+    "command": "curl -fsS -X POST https://carrier-gateway.internal/v1/pickup-requests -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" -H 'Content-Type: application/json' -d '{\"request_key\":\"backlog-2025-02-14-SHP-10483\",\"shipment_id\":\"SHP-10483\",\"carrier_code\":\"CASCADEFREIGHT\",\"pickup_date\":\"2025-02-17\"}'",
+    "output": "Pickup request PR-88423 created",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/v1/pickup-requests/backlog-2025-02-14-SHP-10483"
+   },
+   {
+    "title": "Create fourth pickup request",
+    "command": "curl -fsS -X POST https://carrier-gateway.internal/v1/pickup-requests -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" -H 'Content-Type: application/json' -d '{\"request_key\":\"backlog-2025-02-14-SHP-10484\",\"shipment_id\":\"SHP-10484\",\"carrier_code\":\"CASCADEFREIGHT\",\"pickup_date\":\"2025-02-17\"}'",
+    "output": "Pickup request PR-88424 created",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"Authorization: Bearer $HARBORLINE_CARRIER_TOKEN\" https://carrier-gateway.internal/v1/pickup-requests/backlog-2025-02-14-SHP-10484"
+   },
+   {
+    "title": "Record pickup event",
+    "command": "kafka-console-producer --bootstrap-server kafka.internal:9092 --topic shipment.pickup-requested --property \"key=SHP-10481\" --producer-property acks=all <<< '{\"event_id\":\"evt-pickup-10481\",\"shipment_id\":\"SHP-10481\",\"pickup_request_id\":\"PR-88421\",\"carrier_code\":\"CASCADEFREIGHT\"}'",
+    "output": "pickup-requested event published for SHP-10481",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer --bootstrap-server kafka.internal:9092 --topic shipment.pickup-requested --from-beginning --timeout-ms 5000 | grep -F 'evt-pickup-10481' | tail -1"
+   },
+   {
+    "title": "Verify pickup request totals",
+    "command": "psql -h localhost -U harborline -d shipments -c \"SELECT count(*) AS created FROM carrier_pickup_requests WHERE request_key IN ('backlog-2025-02-14-SHP-10481','backlog-2025-02-14-SHP-10482','backlog-2025-02-14-SHP-10483','backlog-2025-02-14-SHP-10484');\"",
+    "output": "4 carrier pickup requests created",
+    "idempotent": true,
+    "verify_command": "psql -h localhost -U harborline -d shipments -tAc \"SELECT count(*) FROM carrier_pickup_requests WHERE request_key IN ('backlog-2025-02-14-SHP-10481','backlog-2025-02-14-SHP-10482','backlog-2025-02-14-SHP-10483','backlog-2025-02-14-SHP-10484') AND status = 'created';\""
+   }
+  ],
+  "id": "p018"
+ },
+ {
+  "name": "post_partner_delivery_confirmations",
+  "goal": "Post confirmed delivery records for the batch to the partner API and verify that the partner accepted all four confirmations.",
+  "steps": [
+   {
+    "title": "List confirmed deliveries",
+    "command": "psql -h localhost -U harborline -d shipments -c \"SELECT shipment_id, delivered_at, partner_confirmation_id FROM shipment_deliveries WHERE status = 'confirmed' AND partner_confirmation_id IS NULL ORDER BY delivered_at LIMIT 20;\"",
+    "output": "4 confirmed deliveries listed",
+    "idempotent": true,
+    "verify_command": "psql -h localhost -U harborline -d shipments -tAc \"SELECT count(*) FROM shipment_deliveries WHERE status = 'confirmed' AND partner_confirmation_id IS NULL;\""
+   },
+   {
+    "title": "Check partner API health",
+    "command": "curl -fsS https://partner-api.northstar.example/v1/health",
+    "output": "Northstar partner API healthy",
+    "idempotent": true,
+    "verify_command": "curl -fsS https://partner-api.northstar.example/v1/health"
+   },
+   {
+    "title": "Post first delivery confirmation",
+    "command": "curl -fsS -X POST https://partner-api.northstar.example/v1/delivery-confirmations -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" -H 'Content-Type: application/json' -d '{\"confirmation_key\":\"northstar-SHP-20301\",\"shipment_id\":\"SHP-20301\",\"delivered_at\":\"2025-02-14T16:42:00Z\",\"signature\":\"maya-ortiz\"}'",
+    "output": "Confirmation NC-55031 accepted",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" https://partner-api.northstar.example/v1/delivery-confirmations/northstar-SHP-20301"
+   },
+   {
+    "title": "Post second delivery confirmation",
+    "command": "curl -fsS -X POST https://partner-api.northstar.example/v1/delivery-confirmations -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" -H 'Content-Type: application/json' -d '{\"confirmation_key\":\"northstar-SHP-20302\",\"shipment_id\":\"SHP-20302\",\"delivered_at\":\"2025-02-14T17:05:00Z\",\"signature\":\"maya-ortiz\"}'",
+    "output": "Confirmation NC-55032 accepted",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" https://partner-api.northstar.example/v1/delivery-confirmations/northstar-SHP-20302"
+   },
+   {
+    "title": "Post third delivery confirmation",
+    "command": "curl -fsS -X POST https://partner-api.northstar.example/v1/delivery-confirmations -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" -H 'Content-Type: application/json' -d '{\"confirmation_key\":\"northstar-SHP-20303\",\"shipment_id\":\"SHP-20303\",\"delivered_at\":\"2025-02-14T18:11:00Z\",\"signature\":\"maya-ortiz\"}'",
+    "output": "Confirmation NC-55033 accepted",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" https://partner-api.northstar.example/v1/delivery-confirmations/northstar-SHP-20303"
+   },
+   {
+    "title": "Post fourth delivery confirmation",
+    "command": "curl -fsS -X POST https://partner-api.northstar.example/v1/delivery-confirmations -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" -H 'Content-Type: application/json' -d '{\"confirmation_key\":\"northstar-SHP-20304\",\"shipment_id\":\"SHP-20304\",\"delivered_at\":\"2025-02-14T19:27:00Z\",\"signature\":\"maya-ortiz\"}'",
+    "output": "Confirmation NC-55034 accepted",
+    "idempotent": false,
+    "verify_command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" https://partner-api.northstar.example/v1/delivery-confirmations/northstar-SHP-20304"
+   },
+   {
+    "title": "Mark confirmations transmitted",
+    "command": "psql -h localhost -U harborline -d shipments -c \"UPDATE shipment_deliveries SET partner_confirmation_id = CASE shipment_id WHEN 'SHP-20301' THEN 'NC-55031' WHEN 'SHP-20302' THEN 'NC-55032' WHEN 'SHP-20303' THEN 'NC-55033' WHEN 'SHP-20304' THEN 'NC-55034' END, status = 'partner_confirmed' WHERE shipment_id IN ('SHP-20301','SHP-20302','SHP-20303','SHP-20304') AND status = 'confirmed';\"",
+    "output": "UPDATE 4",
+    "idempotent": false,
+    "verify_command": "psql -h localhost -U harborline -d shipments -tAc \"SELECT count(*) FROM shipment_deliveries WHERE shipment_id IN ('SHP-20301','SHP-20302','SHP-20303','SHP-20304') AND status = 'partner_confirmed' AND partner_confirmation_id IS NOT NULL;\""
+   },
+   {
+    "title": "Verify partner delivery batch",
+    "command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" 'https://partner-api.northstar.example/v1/delivery-confirmations?shipment_id=SHP-20301&shipment_id=SHP-20302&shipment_id=SHP-20303&shipment_id=SHP-20304'",
+    "output": "4 delivery confirmations returned",
+    "idempotent": true,
+    "verify_command": "curl -fsS -H \"X-API-Key: $NORTHSTAR_PARTNER_KEY\" https://partner-api.northstar.example/v1/delivery-confirmations/northstar-SHP-20304"
+   }
+  ],
+  "id": "p019"
+ },
+ {
+  "name": "rebuild_shipment_search_index",
+  "goal": "Rebuild the shipment search index from the canonical Postgres shipment records and safely switch search traffic to the new index.",
+  "steps": [
+   {
+    "title": "Inspect Current Index Alias",
+    "command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/_alias/shipments-search'",
+    "output": "{\"shipments-search\":{\"aliases\":{\"shipments-read\":{}}}}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/_alias/shipments-read'"
+   },
+   {
+    "title": "Enable Index Maintenance Mode",
+    "command": "curl -sS -X POST -H 'Authorization: Bearer harborline-ops' -H 'Content-Type: application/json' 'https://search.harborline.internal/shipments-api/_config/maintenance' -d '{\"enabled\":true,\"reason\":\"full shipment search rebuild\",\"ticket\":\"HL-2481\"}'",
+    "output": "{\"acknowledged\":true}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/shipments-api/_config/maintenance'"
+   },
+   {
+    "title": "Clear Rebuilding Index Documents",
+    "command": "curl -sS -X POST -H 'Authorization: Bearer harborline-ops' -H 'Content-Type: application/json' 'https://search.harborline.internal/shipments-search-v2/_delete_by_query' -d '{\"query\":{\"match_all\":{}}}'",
+    "output": "{\"took\":412,\"timed_out\":false,\"total\":184203,\"deleted\":184203}",
+    "idempotent": false,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/shipments-search-v2/_count'"
+   },
+   {
+    "title": "Enqueue Full Reindex Job",
+    "command": "docker compose exec -T redis redis-cli XADD 'shipments:reindex' '*' job_id 'reindex-2025-02-14T18:30Z' source 'postgres.shipments' target 'shipments-search-v2' batch_size '5000'",
+    "output": "1760385000000-0",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T redis redis-cli XLEN 'shipments:reindex'"
+   },
+   {
+    "title": "Publish Index Ready Event",
+    "command": "docker compose exec -T redis redis-cli XADD 'shipments:index-events' '*' event 'reindex_complete' index 'shipments-search-v2' release '2025.02.14'",
+    "output": "1760385060000-0",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T redis redis-cli XRANGE 'shipments:index-events' - '+' COUNT 1"
+   },
+   {
+    "title": "Switch Search Alias",
+    "command": "curl -sS -X POST -H 'Authorization: Bearer harborline-ops' -H 'Content-Type: application/json' 'https://search.harborline.internal/_aliases' -d '{\"actions\":[{\"remove\":{\"index\":\"shipments-search-v1\",\"alias\":\"shipments-read\"}},{\"add\":{\"index\":\"shipments-search-v2\",\"alias\":\"shipments-read\"}}]}'",
+    "output": "{\"acknowledged\":true}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/_alias/shipments-read'"
+   },
+   {
+    "title": "Disable Index Maintenance Mode",
+    "command": "curl -sS -X POST -H 'Authorization: Bearer harborline-ops' -H 'Content-Type: application/json' 'https://search.harborline.internal/shipments-api/_config/maintenance' -d '{\"enabled\":false,\"ticket\":\"HL-2481\"}'",
+    "output": "{\"acknowledged\":true}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/shipments-api/_config/maintenance'"
+   },
+   {
+    "title": "Smoke Test Shipment Lookup",
+    "command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/shipments-read/_search?q=tracking_number:SHP-104892&size=1'",
+    "output": "{\"hits\":{\"total\":{\"value\":1},\"hits\":[{\"_id\":\"shp_01HQ9S3A7V4\"}]}}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://search.harborline.internal/shipments-read/_count'"
+   }
+  ],
+  "id": "p020"
+ },
+ {
+  "name": "refund_duplicate_expedite_fees",
+  "goal": "Issue and reconcile refunds for the identified duplicate expedite fees on shipment SHP-104892 without changing unrelated charges.",
+  "steps": [
+   {
+    "title": "Identify Duplicate Expedite Fees",
+    "command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT fee_id, shipment_id, amount_cents, stripe_payment_intent_id, duplicate_of_fee_id FROM expedite_fees WHERE shipment_id='SHP-104892' AND duplicate_of_fee_id IS NOT NULL ORDER BY created_at;\"",
+    "output": "fee_id            | amount_cents | stripe_payment_intent_id | duplicate_of_fee_id\n fee_exp_8841      | 3500         | pi_3Pship104892A         | fee_exp_8702\n fee_exp_8842      | 3500         | pi_3Pship104892B         | fee_exp_8702",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT count(*) FROM expedite_fees WHERE shipment_id='SHP-104892' AND duplicate_of_fee_id IS NOT NULL;\""
+   },
+   {
+    "title": "Export Refund Candidate Rows",
+    "command": "docker compose exec -T postgres psql -U harborline -d billing -At -F ',' -c \"SELECT fee_id, stripe_payment_intent_id, amount_cents FROM expedite_fees WHERE shipment_id='SHP-104892' AND fee_id IN ('fee_exp_8841','fee_exp_8842') ORDER BY fee_id;\" > /tmp/SHP-104892-refunds.csv && cat /tmp/SHP-104892-refunds.csv",
+    "output": "fee_exp_8841,pi_3Pship104892A,3500\nfee_exp_8842,pi_3Pship104892B,3500",
+    "idempotent": true,
+    "verify_command": "test \"$(wc -l < /tmp/SHP-104892-refunds.csv)\" -eq 2 && cat /tmp/SHP-104892-refunds.csv"
+   },
+   {
+    "title": "Append Refund Ledger Entries",
+    "command": "docker compose exec -T postgres psql -U harborline -d billing -c \"INSERT INTO refund_ledger (fee_id, payment_intent_id, amount_cents, reason, ticket) SELECT fee_id, stripe_payment_intent_id, amount_cents, 'duplicate_expedite_fee', 'HL-2487' FROM expedite_fees WHERE fee_id IN ('fee_exp_8841','fee_exp_8842');\"",
+    "output": "INSERT 0 2",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT fee_id, count(*) FROM refund_ledger WHERE ticket='HL-2487' GROUP BY fee_id ORDER BY fee_id;\""
+   },
+   {
+    "title": "Issue Stripe Refunds",
+    "command": "curl -sS -X POST -u \"$STRIPE_SECRET_KEY:\" -d payment_intent=pi_3Pship104892A -d amount=3500 -d reason=requested_by_customer https://api.stripe.com/v1/refunds && curl -sS -X POST -u \"$STRIPE_SECRET_KEY:\" -d payment_intent=pi_3Pship104892B -d amount=3500 -d reason=requested_by_customer https://api.stripe.com/v1/refunds",
+    "output": "re_1Qship104892A and re_2Qship104892B created",
+    "idempotent": false,
+    "verify_command": "curl -sS -u \"$STRIPE_SECRET_KEY:\" 'https://api.stripe.com/v1/refunds?payment_intent=pi_3Pship104892A'"
+   },
+   {
+    "title": "Mark Duplicate Fees Refunded",
+    "command": "docker compose exec -T postgres psql -U harborline -d billing -c \"UPDATE expedite_fees SET refund_status='refunded', refunded_at=now(), refund_ticket='HL-2487' WHERE fee_id IN ('fee_exp_8841','fee_exp_8842') AND refund_status='pending';\"",
+    "output": "UPDATE 2",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT fee_id, refund_status FROM expedite_fees WHERE fee_id IN ('fee_exp_8841','fee_exp_8842') ORDER BY fee_id;\""
+   },
+   {
+    "title": "Notify Billing Operations Channel",
+    "command": "docker compose exec -T slack-cli slack-cli post --channel '#hl-billing-ops' --text 'HL-2487: duplicate expedite refunds completed for SHP-104892; fee IDs fee_exp_8841 and fee_exp_8842; total $70.00 USD.'",
+    "output": "message ts=1760385120.004200 posted to #hl-billing-ops",
+    "idempotent": false,
+    "verify_command": "docker compose exec -T slack-cli slack-cli history --channel '#hl-billing-ops' --limit 20 | grep 'HL-2487' | tail -n 5"
+   },
+   {
+    "title": "Reconcile Refund Totals",
+    "command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT sum(amount_cents) AS ledger_total_cents, count(*) AS ledger_rows FROM refund_ledger WHERE ticket='HL-2487' AND fee_id IN ('fee_exp_8841','fee_exp_8842');\"",
+    "output": " ledger_total_cents | ledger_rows\n---------------------+-------------\n                 7000 |           2",
+    "idempotent": true,
+    "verify_command": "docker compose exec -T postgres psql -U harborline -d billing -c \"SELECT count(*) FROM refund_ledger WHERE ticket='HL-2487' AND amount_cents=3500;\""
+   },
+   {
+    "title": "Close Refund Operations Ticket",
+    "command": "curl -sS -X PATCH -H 'Authorization: Bearer harborline-ops' -H 'Content-Type: application/json' 'https://ops.harborline.internal/api/tickets/HL-2487' -d '{\"status\":\"resolved\",\"resolution\":\"duplicate expedite fees refunded and reconciled\"}'",
+    "output": "{\"ticket_id\":\"HL-2487\",\"status\":\"resolved\"}",
+    "idempotent": true,
+    "verify_command": "curl -sS -H 'Authorization: Bearer harborline-ops' 'https://ops.harborline.internal/api/tickets/HL-2487' | grep '\"status\":\"resolved\"'"
+   }
+  ],
+  "id": "p021"
+ },
+ {
+  "name": "onboard_new_carrier_account",
+  "goal": "Create and activate the Harborline account, credentials, and welcome workflow for carrier `Northstar Freight` with carrier ID `CAR-4817`.",
+  "steps": [
+   {
+    "title": "Check carrier account status",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT carrier_id, legal_name, status FROM carriers WHERE carrier_id = 'CAR-4817';\"",
+    "output": " carrier_id | legal_name        | status\n------------+------------------+--------\n CAR-4817  | Northstar Freight | pending",
+    "idempotent": true,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT carrier_id, status FROM carriers WHERE carrier_id = 'CAR-4817';\""
+   },
+   {
+    "title": "Inspect duplicate account records",
+    "command": "redis-cli -h harborline-redis.internal EXISTS carrier:onboard:CAR-4817:account",
+    "output": "0",
+    "idempotent": true,
+    "verify_command": "redis-cli -h harborline-redis.internal GET carrier:onboard:CAR-4817:account"
+   },
+   {
+    "title": "Create carrier account record",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"INSERT INTO carriers (carrier_id, legal_name, status, onboarded_at) VALUES ('CAR-4817', 'Northstar Freight', 'pending', NOW());\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT carrier_id, legal_name, status FROM carriers WHERE carrier_id = 'CAR-4817';\""
+   },
+   {
+    "title": "Issue carrier API credentials",
+    "command": "bash -lc \"API_KEY=$(openssl rand -hex 32); psql -h harborline-db.internal -U harborline -d harborline -c \\\"INSERT INTO carrier_api_keys (id, carrier_id, key_hash, created_at) VALUES ('key-nf-2025-03-08', 'CAR-4817', encode(digest('${API_KEY}', 'sha256'), 'hex'), NOW());\\\"; printf '%s' \\\"${API_KEY}\\\" > /secure-transfer/CAR-4817-api-key.txt\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT id, carrier_id, created_at FROM carrier_api_keys WHERE id = 'key-nf-2025-03-08';\""
+   },
+   {
+    "title": "Publish carrier onboarding event",
+    "command": "printf '%s\\n' '{\"event\":\"carrier.account.created\",\"carrier_id\":\"CAR-4817\",\"legal_name\":\"Northstar Freight\"}' | kafka-console-producer.sh --bootstrap-server harborline-kafka.internal:9092 --topic carrier-onboarding",
+    "output": "Created topic carrier-onboarding record",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer.sh --bootstrap-server harborline-kafka.internal:9092 --topic carrier-onboarding --from-beginning --max-messages 20 --timeout-ms 5000 | grep '\"carrier_id\":\"CAR-4817\"'"
+   },
+   {
+    "title": "Send carrier welcome notification",
+    "command": "curl --fail-with-body -sS -X POST https://api.harborline.internal/carriers/CAR-4817/welcome-notification -H 'Authorization: Bearer hl-ops-2025' -H 'Content-Type: application/json' --data '{\"template\":\"carrier-welcome-v3\",\"recipient\":\"integrations@northstarfreight.example\"}'",
+    "output": "{\"status\":\"queued\",\"notification_id\":\"ntf-welcome-car4817-001\"}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -sS https://api.harborline.internal/notifications/ntf-welcome-car4817-001 -H 'Authorization: Bearer hl-ops-2025'"
+   },
+   {
+    "title": "Activate carrier account",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"UPDATE carriers SET status = 'active', activated_at = NOW() WHERE carrier_id = 'CAR-4817' AND status = 'pending';\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT carrier_id, status, activated_at FROM carriers WHERE carrier_id = 'CAR-4817';\""
+   },
+   {
+    "title": "Record onboarding audit event",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"INSERT INTO audit_log (event_type, object_id, actor, details) VALUES ('carrier.activated', 'CAR-4817', '@maria.chen', '{\\\"key_id\\\":\\\"key-nf-2025-03-08\\\",\\\"notification_id\\\":\\\"ntf-welcome-car4817-001\\\"}');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT event_type, object_id, actor, created_at FROM audit_log WHERE event_type = 'carrier.activated' AND object_id = 'CAR-4817' ORDER BY created_at DESC LIMIT 1;\""
+   }
+  ],
+  "id": "p022"
+ },
+ {
+  "name": "send_driver_route_change_notifications",
+  "goal": "Notify assigned drivers about the verified route change for shipment `SHP-903184` without changing shipment or route data.",
+  "steps": [
+   {
+    "title": "Read shipment route assignment",
+    "command": "curl --fail-with-body -sS https://api.harborline.internal/shipments/SHP-903184 -H 'Authorization: Bearer hl-ops-2025'",
+    "output": "{\"shipment_id\":\"SHP-903184\",\"route_id\":\"RTE-7712\",\"driver_id\":\"DRV-2288\",\"status\":\"in_transit\"}",
+    "idempotent": true,
+    "verify_command": "curl --fail-with-body -sS https://api.harborline.internal/shipments/SHP-903184 -H 'Authorization: Bearer hl-ops-2025' | jq -r '.route_id + \" \" + .driver_id + \" \" + .status"
+   },
+   {
+    "title": "Preview route-change recipients",
+    "command": "curl --fail-with-body -sS 'https://api.harborline.internal/notifications/preview?shipment_id=SHP-903184&event=route_changed' -H 'Authorization: Bearer hl-ops-2025' -H 'X-Dry-Run: true'",
+    "output": "{\"route_id\":\"RTE-7712\",\"recipients\":[{\"driver_id\":\"DRV-2288\",\"device_count\":2,\"message_count\":2}]}",
+    "idempotent": true,
+    "verify_command": "curl --fail-with-body -sS 'https://api.harborline.internal/notifications/preview?shipment_id=SHP-903184&event=route_changed' -H 'Authorization: Bearer hl-ops-2025' -H 'X-Dry-Run: true' | jq '.recipients | length"
+   },
+   {
+    "title": "Create route notification records",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"INSERT INTO notification_requests (request_id, shipment_id, driver_id, template, payload, status) VALUES ('route-change-SHP-903184-RTE-7712-001', 'SHP-903184', 'DRV-2288', 'driver-route-change-v5', '{\\\"route_id\\\":\\\"RTE-7712\\\",\\\"change\\\":\\\"exit_22_to_exit_19B\\\"}', 'created');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT request_id, status FROM notification_requests WHERE request_id = 'route-change-SHP-903184-RTE-7712-001';\""
+   },
+   {
+    "title": "Enqueue driver push jobs",
+    "command": "printf '%s\\n' '{\"request_id\":\"route-change-SHP-903184-RTE-7712-001\",\"shipment_id\":\"SHP-903184\",\"driver_id\":\"DRV-2288\",\"template\":\"driver-route-change-v5\"}' | kafka-console-producer.sh --bootstrap-server harborline-kafka.internal:9092 --topic driver-notification-jobs",
+    "output": "Created topic driver-notification-jobs record",
+    "idempotent": false,
+    "verify_command": "kafka-console-consumer.sh --bootstrap-server harborline-kafka.internal:9092 --topic driver-notification-jobs --from-beginning --max-messages 20 --timeout-ms 5000 | grep 'route-change-SHP-903184-RTE-7712-001'"
+   },
+   {
+    "title": "Dispatch push notifications",
+    "command": "curl --fail-with-body -sS -X POST https://api.harborline.internal/notifications/route-change-SHP-903184-RTE-7712-001/dispatch -H 'Authorization: Bearer hl-ops-2025' -H 'Idempotency-Key: route-change-SHP-903184-RTE-7712-001'",
+    "output": "{\"status\":\"dispatched\",\"devices_contacted\":2,\"provider_message_ids\":[\"fcm-7b31d1\",\"apns-991ac4\"]}",
+    "idempotent": false,
+    "verify_command": "curl --fail-with-body -sS https://api.harborline.internal/notifications/route-change-SHP-903184-RTE-7712-001 -H 'Authorization: Bearer hl-ops-2025' | jq -r '.status, .devices_contacted'"
+   },
+   {
+    "title": "Confirm provider delivery receipts",
+    "command": "curl --fail-with-body -sS 'https://api.harborline.internal/notifications/route-change-SHP-903184-RTE-7712-001/receipts' -H 'Authorization: Bearer hl-ops-2025'",
+    "output": "[{\"device\":\"pixel-8\",\"status\":\"delivered\"},{\"device\":\"iphone-14\",\"status\":\"delivered\"}]",
+    "idempotent": true,
+    "verify_command": "curl --fail-with-body -sS 'https://api.harborline.internal/notifications/route-change-SHP-903184-RTE-7712-001/receipts' -H 'Authorization: Bearer hl-ops-2025' | jq '[.[] | select(.status == \"delivered\")] | length'"
+   },
+   {
+    "title": "Mark notification request delivered",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"UPDATE notification_requests SET status = 'delivered', delivered_at = NOW() WHERE request_id = 'route-change-SHP-903184-RTE-7712-001' AND status IN ('created', 'dispatched');\"",
+    "output": "UPDATE 1",
+    "idempotent": true,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT request_id, status, delivered_at FROM notification_requests WHERE request_id = 'route-change-SHP-903184-RTE-7712-001';\""
+   },
+   {
+    "title": "Append notification audit record",
+    "command": "psql -h harborline-db.internal -U harborline -d harborline -c \"INSERT INTO audit_log (event_type, object_id, actor, details) VALUES ('driver.route_change.notified', 'SHP-903184', '@jordan.lee', '{\\\"request_id\\\":\\\"route-change-SHP-903184-RTE-7712-001\\\",\\\"route_id\\\":\\\"RTE-7712\\\",\\\"devices_contacted\\\":2}');\"",
+    "output": "INSERT 0 1",
+    "idempotent": false,
+    "verify_command": "psql -h harborline-db.internal -U harborline -d harborline -c \"SELECT event_type, object_id, actor, created_at FROM audit_log WHERE event_type = 'driver.route_change.notified' AND object_id = 'SHP-903184' ORDER BY created_at DESC LIMIT 1;\""
+   }
+  ],
+  "id": "p023"
+ }
+]
