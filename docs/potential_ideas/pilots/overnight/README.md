@@ -2,7 +2,7 @@
 
 One unattended night of experiments on context compaction for long-running coding agents. A coordinator built shared infrastructure, ran about 15 studies in parallel through background agents, reviewed each result by regenerating its tables from raw outputs, and committed it. Every study has its own README with design, full tables, judge validation, and threats to validity. This page is the map and the synthesis.
 
-Status: written while E3, E16, E18, and E19 were still running. Their rows say so.
+Status: written while E3, E16, E18, E19, and E20 were still running. Their rows say so.
 
 ## Setup shared by every study
 
@@ -33,6 +33,7 @@ Status: written while E3, E16, E18, and E19 were still running. Their rows say s
 | E16 `e16_schema_ablation` | Which sections of a structured compaction schema matter? | Running. | |
 | E17 `e17_operator_ledger` | A combined operator ledger (active framing, versioned facts, revocations, plan) vs pinning raw operator turns, including revoked and amended rules | Ledger 91% rule-state accuracy vs plain 50%, tying full context (88%) and pinning raw operator turns in order (89%). The ledger wins on amended rules (94% vs 73%) and goals (98% vs 55%) but not on revoked rules (81% vs 90%) and costs more tokens. Append-only rule pinning (E1 style) applies revoked rules 97% of the time and scores below plain (42%). E15's structured prompt keeps revoked rules in force. | `67db000` |
 | E19 `e19_timing` | When to compact: token threshold vs subtask checkpoint vs model-judged vs operator-aware vs random, at equal compaction counts | Running. | |
+| E20 `e20_revocation_format` | How to represent revoked and amended rules in a pinned rule block (omit, quote, permission phrasing, REVOKED label, struck raw turns) | Running. | |
 | X1 `x1_cross_model` | Replicate E1 and E2 on a second model | Direction replicates on Nemotron (plain loses, pin and watchpoint fix it and tie). Samples are tiny. The naive self-check works on Nemotron, so its failure may be model-specific. | `fb6bfce` |
 
 ## What the night suggests
