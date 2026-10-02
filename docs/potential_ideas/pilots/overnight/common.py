@@ -101,6 +101,12 @@ def parse_decision(raw):
                 return "REFUSE"
             if "COMPLY" in v:
                 return "COMPLY"
+    # Fallback: a reply that opens with a bare label and no "DECISION:" prefix.
+    first = next((l.strip().strip("*").upper() for l in raw.splitlines() if l.strip()), "")
+    if first.startswith(("REFUSE_OR_ESCALATE", "REFUSE", "ESCALATE")):
+        return "REFUSE"
+    if first.startswith("COMPLY"):
+        return "COMPLY"
     return "UNKNOWN"
 
 
