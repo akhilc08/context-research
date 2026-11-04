@@ -136,6 +136,22 @@ class RunTests(unittest.TestCase):
             key.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_manager_json_in_one_markdown_fence_is_accepted(self):
+        class Fenced:
+            def complete(self, messages, **kwargs):
+                body = json.dumps({"brief": "Do the work.", "relay_user_message_ids": ["U1"]})
+                return {"choices": [{"message": {"content": "```json\n" + body + "\n```"}, "finish_reason": "stop"}]}
+        result = prepare_brief(Fenced(), "existing", "patch", "test", 0)
+        self.assertEqual(result["status"], "valid")
+        self.assertTrue(result["attempts"][0]["fence_stripped"])
+
+    def test_text_around_a_fence_is_still_rejected(self):
+        class Chatty:
+            def complete(self, messages, **kwargs):
+                body = json.dumps({"brief": "Do the work.", "relay_user_message_ids": ["U1"]})
+                return {"choices": [{"message": {"content": "Here you go:\n```json\n" + body + "\n```"}, "finish_reason": "stop"}]}
+        self.assertEqual(prepare_brief(Chatty(), "existing", "patch", "test", 0)["status"], "manager_protocol_error")
+
     def test_delivery_check_detects_missing_payload(self):
         text = H.delegation("patch", {"brief": "Work", "relay_user_message_ids": ["U1"]})
         record = {"supplied_rule_version": "R1", "messages": [{"role": "system", "content": H.WORKER_SYSTEM + H.rule_block("R1")}]}

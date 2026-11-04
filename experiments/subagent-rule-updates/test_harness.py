@@ -24,6 +24,7 @@ from harness import (
     TOOL_FIELDS,
     TOOLS,
     WARMUP,
+    RELAY_LABELS,
     WORKER_TYPES,
     Session,
     Workspace,
@@ -489,7 +490,7 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("Proceed with the patch task.", text)
         self.assertIn(AMENDMENT, text)
         self.assertNotIn(R0, text)
-        self.assertIn("U1 | original author: user | chronological position: 1", text)
+        self.assertIn("U1 | " + RELAY_LABELS["U1"], text)
 
     def test_empty_relay_list_adds_nothing_and_is_marked_none(self):
         text = delegation("minor", {"brief": "Proceed.", "relay_user_message_ids": []})
@@ -499,8 +500,8 @@ class DelegationTests(unittest.TestCase):
 
     def test_u0_plus_u1_relay_both_in_chronological_order_with_labels(self):
         text = delegation("minor", {"brief": "Proceed.", "relay_user_message_ids": ["U0", "U1"]})
-        self.assertIn("U0 | original author: user | chronological position: 0", text)
-        self.assertIn("U1 | original author: user | chronological position: 1", text)
+        self.assertIn("U0 | " + RELAY_LABELS["U0"], text)
+        self.assertIn("U1 | " + RELAY_LABELS["U1"], text)
         self.assertLess(text.index("U0 |"), text.index("U1 |"))
         self.assertIn(R0, text)
         self.assertIn(AMENDMENT, text)

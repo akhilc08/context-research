@@ -9,6 +9,7 @@ import copy
 import fcntl
 import json
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -40,7 +41,11 @@ def prepare_brief(client: Any, worker_type: str, task: str, tag: str, retries: i
             choice = response["choices"][0]
             if choice.get("finish_reason") != "stop":
                 raise ValueError("Manager did not finish normally")
-            value = json.loads(choice["message"]["content"])
+            content = choice["message"]["content"].strip()
+            # Some providers wrap JSON-mode output in one Markdown fence. Strip only that wrapper.
+            fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content, re.S)
+            record["fence_stripped"] = bool(fence)
+            value = json.loads(fence[1] if fence else content)
             brief = H.validate_brief(value)
             return {"status": "valid", "brief": brief, "brief_hash": H.digest(brief), "attempts": attempts}
         except (KeyError, IndexError, TypeError, ValueError) as exc:
