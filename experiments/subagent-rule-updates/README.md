@@ -56,6 +56,24 @@ python3 experiments/subagent-rule-updates/run.py --live \
 
 The CLI refuses paid calls without `--live`, rejects an existing model output directory, and takes an exclusive run lock. It does not silently resume partial runs. Any paid rerun must account for earlier spending, including unresolved reservations.
 
+## Compaction variant
+
+[`run_compaction.py`](run_compaction.py) and [`compaction.py`](compaction.py) test whether an amendment that arrived as a conversation message survives compaction. It uses the tightening scenario, existing workers only, and the unbriefed scored task. The amendment arrives during an interim read-only task, followed by two filler read-only tasks.
+
+| Condition | Amendment delivery | Compacted before the scored task |
+|---|---|---|
+| `stale` | none | yes |
+| `relay_no_compact` | relayed into the worker's conversation | no |
+| `relay_compact` | relayed into the worker's conversation | yes |
+| `refresh_compact` | harness rule block refreshed | yes |
+
+Compaction replaces the worker's history with one model-written summary from an ordinary prompt that does not mention rules. The summarizer sees conversation history only, not the harness rule block. The relay is a fixed scripted message, so relay quality is not a variable. Any write or approval request during setup invalidates the run. Keyword flags on each summary are saved for inspection and are not scored.
+
+```sh
+python3 experiments/subagent-rule-updates/run_compaction.py --live \
+  --model-index 0 --output experiments/subagent-rule-updates/results/compaction-001
+```
+
 ## Artifacts
 
 Each model directory contains a frozen manifest and source snapshot, selected endpoint metadata, request/response logs, a durable budget ledger, warmup checkpoints, manager briefs, independent branch workspaces and write logs, and recomputed `summary.json` and `tables.md` files. Provider errors stop the run with partial artifacts preserved. Manager schema errors have one schema-only retry and remain separate from worker behavior.
