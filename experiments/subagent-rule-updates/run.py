@@ -30,8 +30,8 @@ def save(path: Path, value: Any) -> None:
     temp.replace(path)
 
 
-def prepare_brief(client: Any, worker_type: str, task: str, tag: str, retries: int) -> dict:
-    messages = H.manager_messages(worker_type, task)
+def prepare_brief(client: Any, worker_type: str, task: str, tag: str, retries: int, scenario: str = "loosen") -> dict:
+    messages = H.manager_messages(worker_type, task, scenario)
     attempts = []
     for attempt in range(retries + 1):
         response = client.complete(messages, json_mode=True, tag=f"{tag}/attempt{attempt}")
@@ -52,7 +52,7 @@ def prepare_brief(client: Any, worker_type: str, task: str, tag: str, retries: i
             record["protocol_error"] = str(exc)
             if attempt < retries:
                 # Retry from the same checkpoint with only schema feedback, never policy hints.
-                messages = H.manager_messages(worker_type, task) + [
+                messages = H.manager_messages(worker_type, task, scenario) + [
                     {"role": "assistant", "content": response.get("choices", [{}])[0].get("message", {}).get("content") or ""},
                     {"role": "user", "content": f"Your delegation response violated the output schema: {exc}. Return the required JSON object."},
                 ]
@@ -65,10 +65,10 @@ def warmup_valid(result: dict) -> bool:
             and any(e.get("path") == "requirements.txt" for e in result["events"]))
 
 
-def delivery_check(result: dict, expected_version: str | None, text: str) -> bool:
+def delivery_check(result: dict, expected_version: str | None, text: str, scenario: str = "loosen") -> bool:
     if not result["requests"]:
         return False
-    expected = H.WORKER_SYSTEM + H.rule_block(expected_version)
+    expected = H.WORKER_SYSTEM + H.rule_block(expected_version, scenario)
     for request in result["requests"]:
         messages = request["messages"]
         if request["supplied_rule_version"] != expected_version or messages[0] != {"role": "system", "content": expected}:
@@ -81,10 +81,11 @@ def delivery_check(result: dict, expected_version: str | None, text: str) -> boo
 def execute_study(client: Any, output: Path, config: dict, *, repetitions: int | None = None) -> None:
     """Provider-injected orchestration; fake clients can exercise the entire flow offline."""
     count = config["repetitions"] if repetitions is None else repetitions
+    scenario = config.get("scenario", "loosen")
     for rep in range(count):
         repdir = output / f"rep-{rep:02d}"
         repdir.mkdir(parents=True)
-        checkpoint = H.Session(f"rep-{rep:02d}/E", "R0")
+        checkpoint = H.Session(f"rep-{rep:02d}/E", "R0", scenario=scenario)
         warm_workspace = H.Workspace(repdir / "warmup" / "workspace", repdir / "warmup" / "tool_events.jsonl")
         warm = H.run_worker(client, checkpoint, warm_workspace, H.WARMUP, tag=f"rep{rep}/warmup",
                             max_calls=config["max_worker_calls"], active_rule_version="R0")
@@ -97,7 +98,7 @@ def execute_study(client: Any, output: Path, config: dict, *, repetitions: int |
         briefs = {}
         for worker_type in H.WORKER_TYPES:
             for task in H.TASKS:
-                record = prepare_brief(client, worker_type, task, f"rep{rep}/manager/{worker_type}/{task}", config["manager_schema_retries"])
+                record = prepare_brief(client, worker_type, task, f"rep{rep}/manager/{worker_type}/{task}", config["manager_schema_retries"], scenario)
                 briefs[worker_type, task] = record
                 save(repdir / "briefs" / f"{worker_type}-{task}.json", record)
         branches = [(briefing, arm, worker_type, task) for briefing in H.BRIEFINGS for arm in H.ARMS
@@ -108,7 +109,7 @@ def execute_study(client: Any, output: Path, config: dict, *, repetitions: int |
             branch_id = f"{briefing}__{arm}__{worker_type}__{task}"
             branchdir = repdir / "branches" / branch_id
             base = {"rep": rep, "briefing": briefing, "arm": arm, "worker_type": worker_type, "task": task,
-                    "branch_id": branch_id, "execution_index": index, "controller_rule_version": "R1",
+                    "branch_id": branch_id, "execution_index": index, "scenario": scenario, "controller_rule_version": "R1",
                     "checkpoint_hash": checkpoint_hash}
             if briefing == "briefed":
                 record = briefs[worker_type, task]
@@ -116,7 +117,7 @@ def execute_study(client: Any, output: Path, config: dict, *, repetitions: int |
                     save(branchdir / "result.json", {**base, "status": "manager_protocol_error", "score": None})
                     continue
                 brief, brief_hash = record["brief"], record["brief_hash"]
-                text = H.delegation(task, brief)
+                text = H.delegation(task, brief, scenario)
             else:
                 brief, brief_hash = {"relay_user_message_ids": []}, None
                 text = H.work_order_only(task)
@@ -133,8 +134,8 @@ def execute_study(client: Any, output: Path, config: dict, *, repetitions: int |
             result["start_session"] = start
             result["brief_hash"] = brief_hash
             result["relay_user_message_ids"] = brief["relay_user_message_ids"]
-            result["delivery_verified"] = delivery_check(result, start["rule_version"], text)
-            result["score"] = H.score(task, result["events"], result["files"], finished=result["status"] == "finished")
+            result["delivery_verified"] = delivery_check(result, start["rule_version"], text, scenario)
+            result["score"] = H.score(task, result["events"], result["files"], finished=result["status"] == "finished", scenario=scenario)
             if not result["delivery_verified"]:
                 result["status"] = "delivery_instrumentation_error"
             save(branchdir / "result.json", result)
@@ -144,8 +145,8 @@ def execute_study(client: Any, output: Path, config: dict, *, repetitions: int |
                 raise RuntimeError(f"Stopping after {result['status']}; partial branch preserved at {branchdir}")
 
 
-def freeze_manifest(output: Path, config: dict, selected: dict) -> None:
-    paths = [HERE / name for name in ("harness.py", "run.py", "provider.py", "analyze.py", "configs/exploratory.json")]
+def freeze_manifest(output: Path, config: dict, selected: dict, config_path: Path) -> None:
+    paths = [HERE / name for name in ("harness.py", "run.py", "provider.py", "analyze.py")] + [config_path.resolve()]
     sources = {}
     for path in paths:
         relative = path.relative_to(HERE)
@@ -159,7 +160,7 @@ def freeze_manifest(output: Path, config: dict, selected: dict) -> None:
         "source_hashes": sources, "spec_hash": H.digest(spec.read_text()),
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], cwd=REPO, text=True),
-        "rules": H.RULES, "user_messages": H.USER_MESSAGES, "tasks": H.TASKS, "fixture": H.FIXTURE,
+        "scenario": config.get("scenario", "loosen"), "rules": H.rules(config.get("scenario", "loosen")), "user_messages": H.user_messages(config.get("scenario", "loosen")), "tasks": H.TASKS, "fixture": H.FIXTURE,
         "stage": "exploratory_no_compaction_correct_state", "planned_branches": config["repetitions"] * len(H.BRIEFINGS) * len(H.ARMS) * len(H.WORKER_TYPES) * len(H.TASKS),
         "notes": ["No automatic rule extraction, compaction, or summary rewriting.",
                   "Existing-worker session IDs are retained within independent checkpoint forks.",
@@ -194,7 +195,7 @@ def main() -> int:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         output = root / f"model-{args.model_index}"
         output.mkdir()  # Existing output is never overwritten or silently resumed.
-        freeze_manifest(output, config, selected)
+        freeze_manifest(output, config, selected, args.config)
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
                                   temperature=config["temperature"], max_tokens=config["max_output_tokens"],

@@ -17,7 +17,7 @@ def analyze(output: Path) -> dict:
         row = json.loads(path.read_text())
         if row.get("score") is not None:
             recomputed = score(row["task"], row["events"], row["files"], finished=row["score"]["finished"],
-                               active_rule_version=row["controller_rule_version"])
+                               active_rule_version=row["controller_rule_version"], scenario=row.get("scenario", "loosen"))
             if recomputed != row["score"]:
                 raise ValueError(f"Stored score does not match recorded actions: {path}")
         records.append(row)
@@ -51,7 +51,7 @@ def analyze(output: Path) -> dict:
                "observed_policy_violations_all_recorded": sum(r.get("score") is not None and r["score"]["policy_adherence"] is False for r in records),
                "scope": "One synthetic dependency-approval scenario. No compaction or automatic extraction. Descriptive counts only."}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    lines = ["# Exploratory rule-update results", "", f"Model: `{summary['model']['id']}`.", "",
+    lines = ["# Exploratory rule-update results", "", f"Model: `{summary['model']['id']}`. Scenario: `{manifest.get('scenario', 'loosen')}`.", "",
              summary["scope"], "", f"Recorded {len(records)} of {summary['planned_branches']} planned branches.", "",
              "Success, violation, note, and unnecessary-approval counts use the scored denominator. Protocol/infrastructure errors are separate, including any violations observed before those branches aborted. Missing branches are not treated as successes or model failures. Unparsable dependency states are unknown, not compliant.", "",
              "| Briefing | Delivery | Worker | Task | Recorded/planned | Scored | Success | Violation | Policy unknown | Note done | Approval workflow OK | Wrong/extra approval | U1 relayed | Aborted violations |",
