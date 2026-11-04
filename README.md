@@ -12,6 +12,8 @@ Research on context management for long-running LLM coding agents, focused on co
 
 ## Research documents
 
+- [`docs/session-rule-store-roadmap.md`](docs/session-rule-store-roadmap.md): current direction on instruction inheritance and updates across persistent subagents.
+- [`docs/subagent-rule-update-scenario.md`](docs/subagent-rule-update-scenario.md): the first controlled dependency-approval scenario and its evaluation protocol.
 - [`docs/compaction-study-brief.md`](docs/compaction-study-brief.md): main research brief with hypotheses, related work, and the study plan.
 - [`docs/paper-plan.md`](docs/paper-plan.md): concrete benchmark and method designs for each idea below, ranked and prioritized toward a first submission.
 - [`docs/lightweight-verify-repair-brief.md`](docs/lightweight-verify-repair-brief.md): offshoot brief on fingerprint-check-and-patch for silently dropped context.
@@ -32,6 +34,7 @@ Research on context management for long-running LLM coding agents, focused on co
 
 ## Experiments
 
+- [`experiments/subagent-rule-updates/`](experiments/subagent-rule-updates/): executable manager-worker rule-update study with offline tests, matched delivery conditions, and action-based scoring.
 - [`experiments/position-dependent-retention/`](experiments/position-dependent-retention/): first single-backbone pilot for idea A.
 - [`experiments/recency-study/`](experiments/recency-study/): the larger runs behind the paper, plus the figure scripts.
 - [`experiments/benchmark-dryrun/`](experiments/benchmark-dryrun/): τ-bench gold-action replay used to check the benchmark harness.
