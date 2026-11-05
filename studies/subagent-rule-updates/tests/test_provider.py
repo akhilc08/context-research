@@ -91,6 +91,12 @@ class ProviderTests(unittest.TestCase):
         client.complete([{"role": "user", "content": "hi"}])
         self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
 
+    def test_socket_timeout_is_retried(self):
+        import socket
+        client, fake = self.client(FakeTransport([socket.timeout("read"), success()]), timeout_retries=1)
+        client.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
+
     def test_retry_blocked_by_cap_leaves_client_stopped(self):
         client, fake = self.client(FakeTransport([TimeoutError(), success()]), timeout_retries=1, max_calls=1)
         with self.assertRaises(BudgetExceeded):

@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
 import tempfile
 import time
 import urllib.error
@@ -268,7 +269,9 @@ class OpenRouterClient:
             # Exception messages can contain headers/credentials; log type only.
             failure = type(error).__name__
             # urllib raises socket read timeouts directly and wraps connect-stage timeouts in URLError.
-            timed_out = isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
+            # socket.timeout is a separate class before Python 3.10, so check it explicitly.
+            timeouts = (TimeoutError, socket.timeout)
+            timed_out = isinstance(error, timeouts) or isinstance(getattr(error, "reason", None), timeouts)
         latency = time.monotonic() - start
         raw_text = None
         raw_base64 = None
