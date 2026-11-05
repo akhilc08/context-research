@@ -22,8 +22,8 @@ def reply(text, n):
 class ScriptedTeam:
     """Manager relays (or not) by echoing user turns; workers follow the latest rule text they have seen."""
 
-    def __init__(self, relay=True, spawn_second=False):
-        self.relay, self.spawn_second, self.n = relay, spawn_second, 0
+    def __init__(self, relay=True):
+        self.relay, self.n = relay, 0
 
     def complete(self, messages, *, tools=None, tag="", **kwargs):
         self.n += 1
@@ -34,13 +34,9 @@ class ScriptedTeam:
             turn = sum(m["role"] == "user" for m in messages) - 1
             if step:
                 return reply("Done.", self.n)
-            if turn == 0:
-                return call("spawn_worker", {"name": "w1", "prompt": text}, self.n)
-            if turn == 1:
-                return call("message_worker", {"name": "w1", "message": text}, self.n) if self.relay else reply("Noted.", self.n)
-            if self.spawn_second:
-                return call("spawn_worker", {"name": "w2", "prompt": text}, self.n)
-            return call("message_worker", {"name": "w1", "message": text}, self.n)
+            if turn == 1 and not self.relay:
+                return reply("Noted.", self.n)
+            return call("message_worker", {"message": text}, self.n)
         seen = "\n".join(m["content"] for m in messages if m["role"] == "user")
         task = next((t for t, spec in S.TASKS.items() if spec["text"] in text), None)
         if task is None:
@@ -76,14 +72,14 @@ class RelayTest(unittest.TestCase):
         self.assertIn(S.RULES["changelog"]["v1"], turns[0])
         self.assertIn("rule 2", turns[1])
         self.assertIn(S.RULES["config_values"]["v2"], turns[1])
-        self.assertIn("INV-212", turns[2])
+        self.assertIn("INV-215", turns[2])
 
     def test_relayed_change_is_followed(self):
         for change in R.CHANGES:
             record = run(ScriptedTeam(relay=True), change)
             score = record["score"]
             self.assertEqual(record["status"], "finished")
-            self.assertEqual((score["relayed"], score["relay_turn"], score["routed_to_first_worker"]), (True, 1, True))
+            self.assertEqual((score["relayed"], score["relay_turn"], score["second_task_delegated"]), (True, 1, True))
             self.assertEqual(score["first_task"], {"changelog": "v1", "config_values": "v1"})
             self.assertEqual((score["changed_rule_outcome"], score["unchanged_rule_outcome"]), ("v2", "v1"), change)
 
@@ -92,16 +88,12 @@ class RelayTest(unittest.TestCase):
         self.assertFalse(score["relayed"])
         self.assertEqual((score["changed_rule_outcome"], score["unchanged_rule_outcome"]), ("v1", "v1"))
 
-    def test_new_worker_is_flagged(self):
-        score = run(ScriptedTeam(relay=True, spawn_second=True), "changelog")["score"]
-        self.assertFalse(score["routed_to_first_worker"])
-
     def test_team_rejects_bad_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             team = R.Team(ScriptedTeam(), W.Workspace(Path(tmp) / "w", S.FIXTURE), "t", 4)
             self.assertIn("error", team.execute("message_worker", {"name": "x", "message": "hi"}, 0))
-            self.assertIn("error", team.execute("spawn_worker", {"name": "x", "prompt": ""}, 0))
-            self.assertIn("error", team.execute("delete_worker", {}, 0))
+            self.assertIn("error", team.execute("message_worker", {"message": " "}, 0))
+            self.assertIn("error", team.execute("spawn_worker", {"message": "hi"}, 0))
 
     def test_earlier_changelog_entries_do_not_count(self):
         after_first = dict(S.FIXTURE, **{"CHANGELOG.md": "- INV-212\n"})
@@ -117,7 +109,7 @@ class RelayTest(unittest.TestCase):
             self.assertEqual(summary["sessions"], 4)
             for change in R.CHANGES:
                 cell = summary["changes"][change]
-                self.assertEqual((cell["n"], cell["relayed"], cell["routed"], cell["changed_outcomes"], cell["unchanged_v1"]),
+                self.assertEqual((cell["n"], cell["relayed"], cell["delegated"], cell["changed_outcomes"], cell["unchanged_v1"]),
                                  (2, 2, 2, {"v2": 2}, 2))
 
 

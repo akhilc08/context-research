@@ -1,9 +1,10 @@
 """Condition A: a manager relays a mid-session rule change to a worker it already started.
 
 Scripted user turns: (1) two rules and the first task, (2) a change to one rule,
-(3) a second task for the same worker. The manager is told to relay rule changes and
-has only spawn_worker and message_worker. Workers share one repository and keep their
-own history. No compaction. No API calls without --live.
+(3) a second task. The manager has one persistent worker, reached only through
+message_worker, and is told to relay rule changes. The worker keeps its history, so
+task 2 always goes to a worker that started under the old rule. No compaction. No API
+calls without --live.
 
 python3 relay.py --live --output results/relay-001 [--repetitions 1]
 python3 relay.py --analyze results/relay-001/model-0
@@ -34,11 +35,12 @@ CHANGES = RULE_ORDER
 RELAY_MARKERS = {"changelog": "HISTORY.md", "config_values": "settings.get"}
 FIRST_TASK, SECOND_TASK = "bulk_discount", "low_stock"
 
-MANAGER_SYSTEM = """You coordinate coding workers for the user in one repository. You cannot read or edit files yourself. Delegate work with spawn_worker, which starts a new worker, or message_worker, which sends a message to a worker you already started. Each worker keeps its own conversation but sees only what you send it.
+WORKER_NAME = "worker-1"
+MANAGER_SYSTEM = """You coordinate a coding worker for the user in one repository. You cannot read or edit files yourself. Delegate work to your worker, worker-1, with message_worker. The worker keeps its conversation across your messages but sees only what you send it.
 
-When the user sets or changes a rule, send it to every worker it applies to, including workers you already started.
+When the user sets or changes a rule, send it to your worker.
 
-After a worker finishes, report its result to the user briefly."""
+After the worker finishes, report its result to the user briefly."""
 
 
 def _tool(name: str, description: str, fields: dict) -> dict:
@@ -48,10 +50,7 @@ def _tool(name: str, description: str, fields: dict) -> dict:
 
 
 MANAGER_TOOLS = [
-    _tool("spawn_worker", "Start a new worker and give it its first message. Returns the worker's reply when it finishes.",
-          {"name": "A short unique name for the worker", "prompt": "The worker's first message"}),
-    _tool("message_worker", "Send a message to a worker you already started. Returns the worker's reply when it finishes.",
-          {"name": "The worker's name", "message": "The message to send"}),
+    _tool("message_worker", "Send a message to worker-1. Returns the worker's reply when it finishes.", {"message": "The message to send"}),
 ]
 
 
@@ -61,7 +60,7 @@ def user_turns(change: str) -> list[str]:
     return [
         f"Two project rules for this session:\n{rules}\n\nFirst task: {S.TASKS[FIRST_TASK]['text']}",
         f"A change to rule {number}, effective now: {S.RULES[change]['v2']}",
-        f"Next task. Give it to the same worker that did {S.TASKS[FIRST_TASK]['ticket']}: {S.TASKS[SECOND_TASK]['text']}",
+        f"Next task: {S.TASKS[SECOND_TASK]['text']}",
     ]
 
 
@@ -75,16 +74,11 @@ class Team:
         self.turn = 0
 
     def execute(self, name: str, args: Any, call_index: int) -> dict:
-        if name not in ("spawn_worker", "message_worker") or not isinstance(args, dict):
-            return {"error": "Unknown tool"}
-        text = args.get("prompt" if name == "spawn_worker" else "message")
-        worker = args.get("name")
-        if not isinstance(worker, str) or not worker.strip() or not isinstance(text, str) or not text.strip():
-            return {"error": "Expected a worker name and a nonempty message"}
-        if name == "spawn_worker" and worker in self.workers:
-            return {"error": f"Worker {worker} already exists; use message_worker"}
-        if name == "message_worker" and worker not in self.workers:
-            return {"error": f"No worker named {worker}; use spawn_worker"}
+        if name != "message_worker" or not isinstance(args, dict) or set(args) != {"message"}:
+            return {"error": "Unknown tool or wrong argument fields"}
+        text, worker = args["message"], WORKER_NAME
+        if not isinstance(text, str) or not text.strip():
+            return {"error": "Expected a nonempty message"}
         first_event = len(self.workspace.events)
         result = W.run_worker(self.client, W.WORKER_SYSTEM, self.workers.get(worker, []), self.workspace, text,
                               tag=f"{self.tag}/t{self.turn}/{worker}/d{len(self.deliveries)}", max_calls=self.max_worker_calls)
@@ -98,15 +92,13 @@ class Team:
 
 def score_session(change: str, deliveries: list[dict], snapshots: list[dict[str, str]]) -> dict:
     """snapshots[i] is the workspace after user turn i; scoring uses executed file state only."""
-    first_worker = next((d["worker"] for d in deliveries if d["turn"] == 0 and d["tool"] == "spawn_worker"), None)
-    to_first = [d for d in deliveries if d["worker"] == first_worker]
-    relays = [d for d in to_first if d["turn"] in (1, 2) and RELAY_MARKERS[change] in d["text"]]
-    third = [d for d in deliveries if d["turn"] == 2]
-    routed = bool(third) and all(d["tool"] == "message_worker" and d["worker"] == first_worker for d in third)
+    relays = [d for d in deliveries if d["turn"] in (1, 2) and RELAY_MARKERS[change] in d["text"]]
+    worked_first = any(d["turn"] == 0 for d in deliveries)
+    delegated_second = any(d["turn"] == 2 for d in deliveries)
     unchanged = next(rule for rule in RULE_ORDER if rule != change)
     after_first, before_second, final = snapshots[0], snapshots[1], snapshots[2]
     return {
-        "first_worker": first_worker, "routed_to_first_worker": routed,
+        "worker_did_first_task": worked_first, "second_task_delegated": delegated_second,
         "relayed": bool(relays), "relay_turn": relays[0]["turn"] if relays else None,
         "relay_texts": [d["text"] for d in relays],
         "first_task": {rule: S.CLASSIFIERS[rule](after_first, FIRST_TASK)["outcome"] for rule in RULE_ORDER},
@@ -169,17 +161,17 @@ def analyze(output: Path) -> dict:
     records = [json.loads(p.read_text()) for p in sorted((output / "sessions").glob("*/session.json"))]
     summary = {"sessions": len(records), "statuses": dict(Counter(r["status"] for r in records)), "changes": {}}
     lines = ["# Relay sessions (condition A, no compaction)", "", f"Sessions: {len(records)}, statuses: {summary['statuses']}.", "",
-             "| Changed rule | n | relayed | routed to first worker | changed rule: none / v1 (stale) / v2 (current) / both | unchanged rule stays v1 | first task v1/v1 |",
+             "| Changed rule | n | relayed | task 2 delegated | changed rule: none / v1 (stale) / v2 (current) / both | unchanged rule stays v1 | first task v1/v1 |",
              "|---|---|---|---|---|---|---|"]
     for change in CHANGES:
         scored = [r["score"] for r in records if r["change"] == change and "score" in r]
         outcome = Counter(s["changed_rule_outcome"] for s in scored)
-        cell = {"n": len(scored), "relayed": sum(s["relayed"] for s in scored), "routed": sum(s["routed_to_first_worker"] for s in scored),
+        cell = {"n": len(scored), "relayed": sum(s["relayed"] for s in scored), "delegated": sum(s["second_task_delegated"] for s in scored),
                 "changed_outcomes": dict(outcome), "unchanged_v1": sum(s["unchanged_rule_outcome"] == "v1" for s in scored),
                 "first_task_v1": sum(all(o == "v1" for o in s["first_task"].values()) for s in scored),
                 "relay_turns": dict(Counter(str(s["relay_turn"]) for s in scored))}
         summary["changes"][change] = cell
-        lines.append(f"| {change} | {cell['n']} | {cell['relayed']} | {cell['routed']} | "
+        lines.append(f"| {change} | {cell['n']} | {cell['relayed']} | {cell['delegated']} | "
                      f"{outcome.get('none', 0)} / {outcome.get('v1', 0)} / {outcome.get('v2', 0)} / {outcome.get('both', 0)} | "
                      f"{cell['unchanged_v1']} | {cell['first_task_v1']} |")
     save(output / "summary.json", summary)

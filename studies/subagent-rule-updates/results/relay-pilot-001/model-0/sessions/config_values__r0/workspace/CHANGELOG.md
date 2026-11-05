@@ -1,0 +1,2 @@
+- INV-212: Apply a pre-tax bulk-order discount configurable via BULK_ORDER_DISCOUNT_RATE (default 7%) for orders containing at least BULK_ORDER_ITEM_THRESHOLD items (default 40); tax remains configurable via SALES_TAX_RATE (default 8%).
+- INV-215: Add alphabetically sorted low-stock item names using LOW_STOCK_THRESHOLD (default 12), overridable by environment.
