@@ -1,0 +1,1 @@
+- Added a configurable 7% pre-tax bulk discount for orders meeting the 40-item threshold, and coverage for threshold behavior.

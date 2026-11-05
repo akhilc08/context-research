@@ -2,7 +2,9 @@
 
 What this experiment currently supports, with the runs behind each claim. Counts are forbidden or required actions observed in files and tool calls, not model self-reports. For how each run went, read [RUNS.md](RUNS.md).
 
-## Setup in one paragraph
+There are two series. The first series (sections 1 to 3) used a dependency-approval rule. A review found two problems with it, described in section 3. The second series (sections 4 to 6) fixes both and is the current basis for claims about compaction.
+
+## Setup of the first series
 
 A user sets a dependency rule, then changes it mid-session. A manager agent delegates dependency tasks to worker agents, some of which were already running when the rule changed. We compare three ways the change can reach a worker: the manager relays it in a message, the worker gets the current rules only when it starts (pinning), or the harness refreshes every worker's rule block on every call (the session rule store). In the tightening scenario the original rule allows every dependency update and the amendment requires approval for minor and major updates, so a worker acting on the old rule makes a real forbidden edit.
 
@@ -53,6 +55,50 @@ Re-inserting the user's verbatim amendment after compaction is therefore a worki
 
 The run planned 10 repetitions and stopped at 6 when it reached its configured 1,500-request limit. The six complete repetitions are fully usable. This was tested on Luna only.
 
+### What this does and does not show
+
+The baseline result is what the instruction hierarchy predicts. Models are meant to favor the system prompt, which is where `AGENTS.md`-style rules live, so a stale rule there beating a summarized amendment is expected behavior and not a finding about relay. A user who changes a project-file rule would also edit the file.
+
+The `inline` result does not show that compaction is safe. With no dependency rule at all, Luna does not make the edit (`noblock`, 0/6), so a worker that lost the rule still looks compliant. In fact one of the six `inline` final summaries no longer stated the amendment. The dependency scenario cannot detect a lost rule. The second series uses rules that can.
+
+## 4. Two rules that show a lost rule in the files
+
+`screen-001` tested candidate rules on one worker with no manager and no compaction. A rule passed if Luna broke it when given no rule and followed each version when told.
+
+| Rule (first version, then changed version) | No rule | Told first version | Told changed version |
+|---|---|---|---|
+| Changelog (`CHANGELOG.md`, then `docs/HISTORY.md` with the ticket ID) | 0/10 wrote any log | 10/10 | 10/10 |
+| Config values (constant in `app/config.py`, then `app.settings.get`) | 0/10, values hardcoded | 10/10 | 10/10 |
+
+For both rules, following the old version, the new version, or neither leaves different files, so a stale rule and a lost rule are distinguishable. A third rule, test placement, failed because Luna's default already matched its first version on one task.
+
+## 5. A manager told to relay does relay
+
+`relay-001` used a real Luna manager with one persistent worker. The scripted user stated both rules, gave a task, changed one rule, then gave a second task. The manager was told to relay rule changes.
+
+| Changed rule | Manager relayed the change | Worker followed the new version | Unchanged rule kept |
+|---|---|---|---|
+| Changelog | 10/10 | 10/10 | 10/10 |
+| Config values | 10/10 | 10/10 | 10/10 |
+
+The manager also restated the full current rules with every later task, so in this setup its own history is the copy that matters. Because relay works without compaction, the compaction study keeps the relay as a fixed scripted message.
+
+## 6. After compaction, one rule stays in the summary but stops being applied
+
+`rule-compaction-001` and `rule-compaction-002` reran the first series' compaction protocol with two changes. The original rules sit first in the worker's conversation, like a manager's spawn prompt, so nothing is in the system prompt. The rules are the two from section 4. The amendment is relayed once as a scripted message, followed by 25 read-only filler tasks and three rounds of rolling compaction, and then a task that does not restate the rules.
+
+| Changed rule | No compaction | After 3 compactions |
+|---|---|---|
+| Changelog | 19/19 new version | 19/19 new version |
+| Config values | 19/19 new version | 13/20 new version, 7/20 neither version |
+
+- The config failures hardcoded the values, with no reference to `settings` or `config`. None went back to the old version.
+- 7 of 10 compacted config sessions failed at least one task, against 0 of 10 without compaction (Fisher p = 0.003 by session). Six of the seven failures were on the low-stock task.
+- Every final summary still stated the new version of the changed rule. The worker kept the rule's text and fell back to its default anyway.
+- The unchanged rule stayed on its first version in every branch, and the changelog rule survived compaction completely.
+
+So compaction weakened one of two rules without deleting it. The uncompacted history grew to about 480k characters and was followed every time, so length alone does not explain the failures. This is Luna only, with one summarizer prompt.
+
 ## Smaller observations
 
 - With a manager brief, the assisted manager relayed the amendment in every branch, and workers almost always followed it.
@@ -61,9 +107,10 @@ The run planned 10 repetitions and stopped at 6 when it reached its configured 1
 
 ## Limits
 
-- One synthetic scenario: two dependencies, one rule, one amendment, read-only filler tasks.
-- Small samples: 3 to 13 runs per cell. Claims rest on large effects, not precise rates.
+- One small fixture repository, two screened rules, one amendment per session, read-only filler tasks.
+- Small samples: 3 to 20 runs per cell. Claims rest on large effects, not precise rates.
+- The second series is Luna only. The compaction effect in section 6 has not been checked on another model.
+- Compaction replaces the whole history with one summary written from a generic prompt. Real harnesses keep recent messages verbatim and use their own prompts.
 - The correct rules were supplied directly. Automatic capture of rules from user messages is untested.
-- The manager was an assisted relay that never forgot to forward the amendment. How often a real manager fails to propagate changes is unmeasured.
 - The relay in compaction runs was a fixed scripted message.
 - Each model played every role (manager, worker, summarizer) within its own run.

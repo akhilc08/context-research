@@ -1,0 +1,1 @@
+- Implemented configurable bulk-order discounts in pricing, applied to subtotal before tax, with coverage for threshold behavior and overrides.

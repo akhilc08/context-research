@@ -1,0 +1,2 @@
+- INV-212: Apply a configurable 7% bulk discount to orders with at least 40 total items before tax.
+- INV-212: Add pricing tests for bulk discount threshold and before-tax calculation.

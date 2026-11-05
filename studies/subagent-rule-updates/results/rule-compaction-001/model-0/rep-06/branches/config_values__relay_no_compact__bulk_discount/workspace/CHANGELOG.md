@@ -1,0 +1,1 @@
+- Added an environment-configurable 7% bulk discount for orders of at least 40 items before tax.

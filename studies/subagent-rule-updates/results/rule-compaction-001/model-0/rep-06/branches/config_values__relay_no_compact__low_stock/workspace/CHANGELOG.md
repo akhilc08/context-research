@@ -1,0 +1,1 @@
+- Added low_stock(items) to return sorted names of items below the configurable quantity threshold.

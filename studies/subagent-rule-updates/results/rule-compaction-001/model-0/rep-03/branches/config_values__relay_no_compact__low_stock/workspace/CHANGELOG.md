@@ -1,0 +1,1 @@
+- Added configurable `low_stock(items)` inventory query to return alphabetically sorted item names below the stock threshold.

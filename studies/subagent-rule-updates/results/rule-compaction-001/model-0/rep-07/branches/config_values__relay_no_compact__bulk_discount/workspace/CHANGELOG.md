@@ -1,0 +1,1 @@
+- Add a configurable 7% subtotal discount for orders of at least 40 items, applied before tax.

@@ -24,8 +24,11 @@ Several early runs exposed harness problems that were fixed before the next run.
 | `screen-001` | rule screen | Luna | 70 runs | $0.04 | Which rules does the model break by default and follow when told? |
 | `relay-pilot-001`, `relay-pilot-002` | relay sessions | Luna | 2 + 2 sessions | $0.01 | Pilots for condition A |
 | `relay-001` | relay sessions | Luna | 20 sessions | $0.06 | Condition A, manager relays a rule change, no compaction |
+| `rule-compaction-pilot-001` | rule compaction | Luna | 8 branches | $0.31 | Pilot for the second-series compaction study |
+| `rule-compaction-001` | rule compaction | Luna | 69 of 80 | $2.77 | Relay with versus without compaction, stopped by a timeout in repetition 9 |
+| `rule-compaction-002` | rule compaction | Luna | 8 branches | $0.31 | One-repetition top-up for `rule-compaction-001` |
 
-Total spent through `relay-001`: about $39.89.
+Total spent through `rule-compaction-002`: about $43.28.
 
 ## Entries
 
@@ -62,4 +65,8 @@ This series uses `scenarios.py`, `worker.py`, `screen.py`, and `relay.py`. One f
 `relay-pilot-001` (2 sessions). The manager had `spawn_worker` and `message_worker`. In the config session it started a new worker for every turn instead of messaging the existing one, so the second task never reached a worker that started under the old rule. The manager now has one persistent worker and only `message_worker`. `relay-pilot-002` (2 sessions) ran as designed.
 
 `relay-001` (GPT-6 Luna, `configs/relay.json`, 20 sessions, about $0.06). The scripted user stated both rules with task 1, changed one rule, then gave task 2. The manager was told to relay rule changes. It relayed the change to the worker right after the change in 20/20 sessions, and it also restated the full current rules with task 2 in 20/20. The worker followed the new version of the changed rule in 20/20 and kept the old version of the unchanged rule in 20/20. Task 1 followed both original rules in 20/20. Without compaction, relay works. Because the manager restates the rules with every task, the worker never has to remember them, and the manager's history becomes the single copy that matters.
+
+`rule-compaction-pilot-001` (GPT-6 Luna, `configs/rule-compaction.json`, 1 repetition, 8 branches, about $0.31). `rule_compaction.py` reruns the first series' compaction protocol with the original rules first in the worker's conversation and the two screened rules. Compacted sessions compacted 3 times, after filler steps 8, 16, and 24, and every filler step stayed read-only. All branches attempted the task. The changelog rule was followed with and without compaction. In the compacted config session, both tasks hardcoded the values even though the final summary said to read tunables with `app.settings.get`.
+
+`rule-compaction-001` (GPT-6 Luna, 10 repetitions planned, about $2.77). It stopped in repetition 9 when a request timed out, which the client treats as unknown billing and stops on. Nine repetitions finished, plus 6 of 8 branches of repetition 9. `rule-compaction-002` (1 repetition, about $0.31) topped it up. Pooled, the changelog rule was followed in 19/19 branches with and without compaction. The config rule was followed in 19/19 without compaction and 13/20 after compaction. The other 7 hardcoded the values, with no reference to `settings` or `config`, and none went back to the old version. 7 of 10 compacted config sessions failed at least one task, against 0 of 10 without compaction (Fisher p = 0.003). Six of the seven failures were on the low-stock task. Every final summary still mentioned the new version of the changed rule, and the unchanged rule stayed on its first version in every branch. Raw request logs (about 110 MB each) are kept locally and not committed.
 

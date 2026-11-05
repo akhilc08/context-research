@@ -1,0 +1,1 @@
+- Orders with 40 or more items receive a 7% subtotal discount before tax.

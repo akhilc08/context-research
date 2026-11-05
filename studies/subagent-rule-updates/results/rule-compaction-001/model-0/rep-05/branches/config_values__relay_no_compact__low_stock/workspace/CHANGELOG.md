@@ -1,0 +1,1 @@
+- Added low_stock(items) to return alphabetically sorted names of items below LOW_STOCK_THRESHOLD, configurable via the environment.
