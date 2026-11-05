@@ -1,0 +1,3 @@
+- INV-212: Added a 7% pre-tax discount for orders containing 40 or more items, with configurable discount and tax settings and pricing coverage.
+- Updated pricing to read discount threshold, discount rate, and tax rate from environment-backed `app.settings.get` defaults; removed these tunables from `app/config.py`.
+- INV-215: Added `low_stock(items)` to return alphabetically sorted item names below the environment-configurable threshold, with tests for sorting, threshold behavior, and overrides.

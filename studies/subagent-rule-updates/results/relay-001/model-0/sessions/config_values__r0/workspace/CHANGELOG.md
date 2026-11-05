@@ -1,0 +1,3 @@
+- INV-212: Apply a 7% pre-tax discount to orders containing at least 40 items.
+- Updated INV-212 discount settings to read environment-overridable threshold and rate via `app.settings.get`.
+- INV-215: Add configurable low-stock filtering with alphabetically sorted item names.

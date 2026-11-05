@@ -1,0 +1,3 @@
+- Added a 7% pre-tax discount for orders containing at least 40 items.
+- Changed pricing threshold, discount rate, and tax rate to use environment-overridable settings with defaults.
+- Added alphabetically sorted low-stock item names using the environment-overridable LOW_STOCK_THRESHOLD setting (default 12).

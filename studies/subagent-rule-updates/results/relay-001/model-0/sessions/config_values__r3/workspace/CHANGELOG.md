@@ -1,0 +1,3 @@
+- INV-212: Apply a 7% pre-tax discount to orders containing at least 40 items, with pricing settings defined in configuration.
+- INV-212: Read pricing rates and item threshold from environment-backed app.settings with the existing defaults instead of app/config.py.
+- INV-215: Add low_stock(items), using LOW_STOCK_THRESHOLD from app.settings (default 12) and returning matching names alphabetically.

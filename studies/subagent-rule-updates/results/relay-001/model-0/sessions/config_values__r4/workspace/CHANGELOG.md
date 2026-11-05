@@ -1,0 +1,3 @@
+- INV-212: Apply a 7% pre-tax discount to orders containing at least 40 items.
+- INV-212: Read pricing thresholds and rates through environment-overridable settings defaults.
+- INV-215: Add low_stock(items) using an environment-overridable threshold and alphabetical name sorting.

@@ -1,0 +1,3 @@
+- INV-212: Added a configurable 7% pre-tax discount for orders of 40 or more items and covered bulk pricing behavior with tests.
+- INV-212 follow-up: Read tax and bulk-discount tunables from environment-backed settings with their existing defaults.
+- INV-215: Added low_stock(items), using an environment-configurable threshold and returning qualifying item names alphabetically.

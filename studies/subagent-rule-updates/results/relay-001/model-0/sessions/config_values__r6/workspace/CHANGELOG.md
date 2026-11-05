@@ -1,0 +1,3 @@
+- INV-212: Apply a 7% pre-tax discount to orders with 40 or more total items.
+- Read bulk-discount threshold and rate from environment-overridable settings.
+- INV-215: Add alphabetically sorted low-stock item lookup with configurable threshold.

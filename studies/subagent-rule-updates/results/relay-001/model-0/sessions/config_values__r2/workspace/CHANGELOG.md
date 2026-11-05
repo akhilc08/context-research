@@ -1,0 +1,3 @@
+- INV-212: Apply a 7% pre-tax discount to orders containing at least 40 items, with threshold and rate configured in `app/config.py`.
+- INV-212 follow-up: Read the bulk discount threshold and rate from `app.settings.get`, defaulting to 40 items and 7%, instead of `app/config.py`.
+- INV-215: Add `low_stock(items)` to return alphabetically sorted names below the configurable `LOW_STOCK_THRESHOLD` (default 12).

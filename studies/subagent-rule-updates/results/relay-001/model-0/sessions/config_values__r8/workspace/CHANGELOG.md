@@ -1,0 +1,3 @@
+- Implemented INV-212 bulk pricing: orders with at least 40 items receive a 7% subtotal discount before tax, with threshold and rate configured in `app/config.py`.
+- Updated INV-212 threshold and discount rate to use `app.settings.get` environment overrides with defaults; removed the tunables from `app/config.py`.
+- Implemented INV-215 `low_stock(items)` using the `LOW_STOCK_THRESHOLD` environment setting (default 12) and alphabetically sorted names.

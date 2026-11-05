@@ -1,0 +1,1 @@
+- INV-212: Apply a configurable 7% discount to order subtotals for orders of 40 or more items before tax.
