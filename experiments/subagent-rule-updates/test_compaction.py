@@ -46,57 +46,58 @@ class Scripted:
 
 
 class CompactionTests(unittest.TestCase):
-    def run_study(self, client, fillers=3):
-        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": fillers}
+    def run_study(self, client, fillers=6, threshold=9000, minimum=2):
+        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": fillers,
+                  "log_lines": 40, "compact_threshold_chars": threshold, "min_compactions": minimum}
         output = Path(tempfile.mkdtemp())
         save(output / "manifest.json", {"config": config, "selected_model": {"id": "scripted"}, "planned_branches": 8})
         execute(client, output, config)
         return output, analyze(output)
 
-    def test_conditions_deliver_amendment_and_compact_as_designed(self):
+    def test_rolling_conditions_compact_repeatedly_and_relay_control_never_does(self):
         output, summary = self.run_study(Scripted())
         self.assertEqual(summary["recorded_branches"], 8)
         self.assertEqual(sum(r["task_success"] for r in summary["groups"]), 8)
-        conditions = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/conditions/*/record.json")}
-        tracks = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
-        self.assertEqual(set(tracks), set(C.TRACKS))
-        # Relay conditions share one preparation; only compaction differs.
-        self.assertEqual(conditions["relay_compact"]["track_checkpoint_hash"], conditions["relay_no_compact"]["track_checkpoint_hash"])
-        for condition, (track, compacted) in C.CONDITIONS.items():
-            history = conditions[condition]["checkpoint"]["history"]
-            self.assertEqual("compaction" in conditions[condition], compacted)
-            if compacted:
-                self.assertEqual(len(history), 1)
-                self.assertTrue(history[0]["content"].startswith(C.SUMMARY_PREFIX))
+        prep = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
+        for condition, (track, rolling) in C.CONDITIONS.items():
+            record = prep[condition]
+            if rolling:
+                self.assertGreaterEqual(len(record["compactions"]), 2)
+                # Each later round summarizes a history that starts with the previous summary.
+                for event in record["compactions"][1:]:
+                    self.assertIn(C.SUMMARY_PREFIX, event["messages"][1]["content"])
             else:
-                self.assertTrue(any(H.AMENDMENT_TIGHTEN in str(m.get("content")) for m in history))
-            self.assertEqual(conditions[condition]["checkpoint"]["rule_version"], C.TRACKS[track]["rule_version"])
+                self.assertEqual(record["compactions"], [])
+                self.assertTrue(any(H.AMENDMENT_TIGHTEN in str(m.get("content")) for m in record["checkpoint"]["history"]))
+            self.assertEqual(record["checkpoint"]["rule_version"], C.TRACKS[track]["rule_version"])
         rows = [json.loads(p.read_text()) for p in output.glob("rep-00/branches/*/result.json")]
         self.assertTrue(all(r["delivery_verified"] for r in rows))
         for row in rows:
             block = row["requests"][0]["messages"][0]["content"]
             self.assertIn(H.R1 if row["condition"] == "refresh_compact" else H.R0_TIGHTEN, block)
+        self.assertEqual(len(summary["summary_diagnostics"]["relay_compact"][0]), len(prep["relay_compact"]["compactions"]))
 
-    def test_filler_is_long_neutral_and_reaches_the_summarizer(self):
+    def test_relay_reaches_only_the_first_relay_summarizer_input_verbatim(self):
         client = Scripted()
-        output, _ = self.run_study(client, fillers=4)
-        track = json.loads((output / "rep-00/prep/relay/record.json").read_text())
-        self.assertEqual(len(track["steps"]), 5)
-        self.assertGreater(track["history_chars"], 20000)
-        logs = "".join(C.filler_files(4).values()).lower()
-        for word in ("approv", "dependenc", "minor", "rule"):
-            self.assertNotIn(word, logs)
-        inputs = {tag.split("/")[2]: msgs[1]["content"] for tag, msgs in client.calls if "/compact/" in tag}
-        self.assertIn(H.AMENDMENT_TIGHTEN, inputs["relay_compact"])
-        self.assertNotIn(H.AMENDMENT_TIGHTEN, inputs["stale"])
-        self.assertNotIn(H.AMENDMENT_TIGHTEN, inputs["refresh_compact"])
-        for text in inputs.values():
-            self.assertNotIn("[User rule snapshot", text)
-            self.assertIn("ERROR", text)
+        self.run_study(client)
+        first = {tag.split("/")[2]: msgs[1]["content"] for tag, msgs in client.calls if tag.endswith("/compact0")}
+        self.assertIn(H.AMENDMENT_TIGHTEN, first["relay_compact"])
+        self.assertNotIn(H.AMENDMENT_TIGHTEN, first["stale"])
+        self.assertNotIn(H.AMENDMENT_TIGHTEN, first["refresh_compact"])
+        for tag, msgs in client.calls:
+            if "/compact" in tag:
+                self.assertNotIn("[User rule snapshot", msgs[1]["content"])
 
-    def test_logs_are_deterministic(self):
-        self.assertEqual(C.log_file(3), C.log_file(3))
-        self.assertNotEqual(C.log_file(3), C.log_file(4))
+    def test_too_few_compactions_invalidates_setup(self):
+        with self.assertRaises(RuntimeError):
+            self.run_study(Scripted(), fillers=2, threshold=10**9)
+
+    def test_filler_logs_are_neutral_deterministic_and_sized(self):
+        logs = "".join(C.filler_files(5, 220).values())
+        for word in ("approv", "dependenc", "minor", "rule"):
+            self.assertNotIn(word, logs.lower())
+        self.assertEqual(C.log_file(3, 220), C.log_file(3, 220))
+        self.assertGreater(len(C.log_file(0, 220)), 15000)
 
     def test_worker_instructions_treat_relays_as_the_users_own_words(self):
         self.assertNotIn("authenticated", H.WORKER_SYSTEM)

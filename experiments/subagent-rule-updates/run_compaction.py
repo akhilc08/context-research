@@ -26,30 +26,35 @@ REPO = HERE.parents[1]
 ERRORS = {"provider_error", "delivery_instrumentation_error", "model_protocol_error"}
 
 
-def prepare_track(client: Any, warm: H.Session, track: str, scenario: str, prepdir: Path, tag: str,
-                  max_calls: int, filler_count: int) -> tuple[H.Session, dict]:
-    """Interim task (relay or not) plus long read-only filler. Shared by conditions on the same track."""
+def prepare_condition(client: Any, warm: H.Session, condition: str, scenario: str, prepdir: Path, tag: str,
+                      config: dict) -> tuple[H.Session, dict]:
+    """Interim task (relay or not), then long read-only filler with optional rolling compaction."""
+    track, rolling = C.CONDITIONS[condition]
     spec = C.TRACKS[track]
     session = warm.fork()
     session.rule_version = spec["rule_version"]
     refresh = spec["rule_version"] == "R1"
-    extra = C.filler_files(filler_count)
-    record = {"track": track, **spec, "steps": []}
-    messages = [C.interim_message(spec["relay"], scenario)] + [C.envelope(t) for t in C.filler_tasks(filler_count)]
+    count, lines, threshold = config["filler_tasks"], config["log_lines"], config["compact_threshold_chars"]
+    extra = C.filler_files(count, lines)
+    record = {"condition": condition, "track": track, "rolling": rolling, **spec, "steps": [], "compactions": []}
+    messages = [C.interim_message(spec["relay"], scenario)] + [C.envelope(t) for t in C.filler_tasks(count, lines)]
     for index, text in enumerate(messages):
         workspace = H.Workspace(prepdir / f"step-{index:02d}" / "workspace", prepdir / f"step-{index:02d}" / "tool_events.jsonl",
                                 extra_files=extra)
-        result = H.run_worker(client, session, workspace, text, tag=f"{tag}/step{index:02d}", max_calls=max_calls,
-                              refresh=refresh, active_rule_version="R1")
+        result = H.run_worker(client, session, workspace, text, tag=f"{tag}/step{index:02d}",
+                              max_calls=config["max_worker_calls"], refresh=refresh, active_rule_version="R1")
         mutations = [e for e in result["events"] if e["tool"] != "read_file"]
         record["steps"].append({"index": index, "status": result["status"], "mutations": mutations,
-                                "calls": len(result["requests"])})
+                                "calls": len(result["requests"]), "history_chars": len(C.render_history(session.history))})
         if result["status"] != "finished" or mutations:
             record["setup_valid"] = False
             return session, record
-    record["setup_valid"] = True
-    record["history_messages"] = len(session.history)
-    record["history_chars"] = len(C.render_history(session.history))
+        if rolling and len(C.render_history(session.history)) > threshold:
+            event = C.compact(client, session, f"{tag}/compact{len(record['compactions'])}")
+            event["after_step"] = index
+            record["compactions"].append(event)
+    record["setup_valid"] = not rolling or len(record["compactions"]) >= config.get("min_compactions", 1)
+    record["final_history_chars"] = len(C.render_history(session.history))
     record["checkpoint"] = session.checkpoint()
     return session, record
 
@@ -66,23 +71,13 @@ def execute(client: Any, output: Path, config: dict) -> None:
         save(repdir / "warmup.json", result)
         if not result["setup_valid"]:
             raise RuntimeError(f"Invalid warmup in repetition {rep}")
-        tracks = {}
-        for track in C.TRACKS:
-            session, record = prepare_track(client, warm, track, scenario, repdir / "prep" / track, f"rep{rep}/prep/{track}",
-                                            config["max_worker_calls"], config["filler_tasks"])
-            save(repdir / "prep" / track / "record.json", record)
-            if not record["setup_valid"]:
-                raise RuntimeError(f"Invalid preparation for track {track} in repetition {rep}")
-            tracks[track] = session
         prepared = {}
-        for condition, (track, do_compact) in C.CONDITIONS.items():
-            session = tracks[track].fork()
-            record = {"condition": condition, "track": track, "compacted": do_compact,
-                      "track_checkpoint_hash": H.digest(tracks[track].checkpoint())}
-            if do_compact:
-                record["compaction"] = C.compact(client, session, f"rep{rep}/compact/{condition}")
-            record["checkpoint"] = session.checkpoint()
-            save(repdir / "conditions" / condition / "record.json", record)
+        for condition in C.CONDITIONS:
+            session, record = prepare_condition(client, warm, condition, scenario, repdir / "prep" / condition,
+                                                f"rep{rep}/prep/{condition}", config)
+            save(repdir / "prep" / condition / "record.json", record)
+            if not record["setup_valid"]:
+                raise RuntimeError(f"Invalid preparation for {condition} in repetition {rep}")
             prepared[condition] = session
         branches = [(c, t) for c in C.CONDITIONS for t in H.TASKS]
         random.Random(config["order_seed"] + rep).shuffle(branches)
@@ -135,13 +130,13 @@ def analyze(output: Path) -> dict:
                          "unnecessary_or_wrong_approval": sum(bool(r["score"]["unnecessary_or_wrong_approval_requests"]) for r in valid),
                          "approval_workflow_ok": sum(r["score"]["approval_workflow_ok"] for r in valid)})
     diagnostics = {}
-    for path in sorted(output.glob("rep-*/conditions/*/record.json")):
+    for path in sorted(output.glob("rep-*/prep/*/record.json")):
         record = json.loads(path.read_text())
-        if "compaction" in record:
-            compaction = record["compaction"]
-            diagnostics.setdefault(record["condition"], []).append({**compaction["diagnostics"],
-                "transcript_chars": compaction["transcript_chars"], "summary_chars": compaction["summary_chars"],
-                "summarizer_prompt_tokens": compaction["summarizer_prompt_tokens"]})
+        rounds = [{**c["diagnostics"], "after_step": c["after_step"], "transcript_chars": c["transcript_chars"],
+                   "summary_chars": c["summary_chars"], "summarizer_prompt_tokens": c["summarizer_prompt_tokens"]}
+                  for c in record.get("compactions", [])]
+        if rounds:
+            diagnostics.setdefault(record["condition"], []).append(rounds)
     summary = {"model": manifest["selected_model"], "scenario": scenario, "planned_branches": manifest["planned_branches"],
                "recorded_branches": len(records), "statuses": dict(Counter(r["status"] for r in records)),
                "groups": rows, "summary_diagnostics": diagnostics,
@@ -155,7 +150,7 @@ def analyze(output: Path) -> dict:
         lines.append(f"| {r['condition']} | {r['task']} | {r['scored']} | {r['task_success']} | {r['policy_violation']} | "
                      f"{r['policy_unknown']} | {r['unnecessary_or_wrong_approval']} | {r['approval_workflow_ok']} |")
     lines += ["", "## Summary keyword diagnostics (not scored)", "", "```json", json.dumps(diagnostics, indent=2), "```", "",
-              "The relay is a fixed scripted message, not model-written. The summarizer sees conversation history only, not the harness rule block. Relay conditions share one preparation and differ only in compaction.", ""]
+              "The relay is a fixed scripted message, not model-written. The summarizer sees conversation history only, not the harness rule block. Rolling conditions compact whenever the rendered history passes the configured threshold, so diagnostics list one entry per compaction round.", ""]
     (output / "tables.md").write_text("\n".join(lines))
     return summary
 
@@ -190,7 +185,6 @@ def main() -> int:
             "source_hashes": sources, "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
             "rules": H.rules(config["scenario"]), "user_messages": H.user_messages(config["scenario"]),
             "conditions": {k: list(v) for k, v in C.CONDITIONS.items()}, "tracks": C.TRACKS, "summarizer_system": C.SUMMARIZER_SYSTEM,
-            "filler_tasks": config["filler_tasks"],
             "planned_branches": config["repetitions"] * len(C.CONDITIONS) * len(H.TASKS)})
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],

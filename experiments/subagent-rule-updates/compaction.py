@@ -20,7 +20,8 @@ TRACKS = {
     "relay": {"relay": True, "rule_version": "R0"},
     "refresh": {"relay": False, "rule_version": "R1"},
 }
-# condition -> (track, compact before scored task). Relay conditions share one preparation.
+# condition -> (track, rolling compaction). Rolling conditions compact whenever the history
+# passes a size threshold, so an early amendment can be summarized several times.
 CONDITIONS = {
     "stale": ("none", True),
     "relay_no_compact": ("relay", False),
@@ -60,13 +61,13 @@ def log_file(index: int, lines: int = 110, seed: int = 20261025) -> str:
     return "\n".join(out) + "\n"
 
 
-def filler_files(count: int) -> dict[str, str]:
-    return {f"logs/{SERVICES[i % len(SERVICES)]}-{i:02d}.log": log_file(i) for i in range(count)}
+def filler_files(count: int, lines: int = 110) -> dict[str, str]:
+    return {f"logs/{SERVICES[i % len(SERVICES)]}-{i:02d}.log": log_file(i, lines) for i in range(count)}
 
 
-def filler_tasks(count: int) -> list[str]:
+def filler_tasks(count: int, lines: int = 110) -> list[str]:
     return [f"Read {path} and report how many lines are ERROR level and which error code appears most often. "
-            f"Do not change any files." for path in filler_files(count)]
+            f"Do not change any files." for path in filler_files(count, lines)]
 
 
 def envelope(task: str, briefing: str = "(none)", relay: str = "(none)") -> str:

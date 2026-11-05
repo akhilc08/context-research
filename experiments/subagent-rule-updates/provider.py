@@ -27,6 +27,7 @@ from typing import Callable
 BASE_URL = "https://openrouter.ai/api/v1"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SAFETY_MARGIN = Decimal("1.25")
+ANTHROPIC_CACHE_PROVIDERS = {"Anthropic", "Amazon Bedrock", "Google", "Azure", "Claude Platform on AWS"}
 TOKEN_ALLOWANCE = 4096
 
 
@@ -109,7 +110,9 @@ class OpenRouterClient:
         *,
         reasoning_effort: str = "low",
         transport: Callable | None = None,
+        prompt_cache: bool = True,
     ):
+        self.prompt_cache = prompt_cache
         self.output_dir = Path(output_dir)
         self.model = model
         self.provider_name = provider_name
@@ -195,6 +198,9 @@ class OpenRouterClient:
 
     def _generation_settings(self) -> dict:
         settings = {"max_tokens": self.max_tokens}
+        # Anthropic only caches when the request opts in. OpenAI caches automatically.
+        if self.prompt_cache and self.provider_name in ANTHROPIC_CACHE_PROVIDERS:
+            settings["cache_control"] = {"type": "ephemeral"}
         if "temperature" in self._supported:
             settings["temperature"] = self.temperature
         if "parallel_tool_calls" in self._supported:

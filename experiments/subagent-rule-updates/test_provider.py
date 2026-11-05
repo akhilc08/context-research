@@ -320,6 +320,8 @@ class ProviderTests(unittest.TestCase):
                 history = messages + [returned["choices"][0]["message"], {"role": "user", "content": "Continue"}]
                 client.complete(history, tools=TOOLS)
                 settings = {"max_tokens": 4096, "reasoning": {"effort": effort}}
+                if provider_name == "Anthropic":
+                    settings["cache_control"] = {"type": "ephemeral"}
                 self.assertEqual(client.model_metadata["effective_settings"], settings)
                 for call in fake.posts:
                     request = json.loads(call["body"])
@@ -345,6 +347,20 @@ class ProviderTests(unittest.TestCase):
         request = json.loads(fake.posts[0]["body"])
         self.assertEqual(request["provider"]["only"], ["Anthropic"])
         self.assertEqual(request["model"], model)
+        self.assertEqual(request["cache_control"], {"type": "ephemeral"})
+
+    def test_cache_control_only_for_anthropic_and_can_be_disabled(self):
+        fake = FakeTransport()
+        client, _ = self.client(fake)
+        client.complete([], tools=TOOLS)
+        self.assertNotIn("cache_control", json.loads(fake.posts[0]["body"]))
+        fake2 = FakeTransport()
+        model = "anthropic/claude-sonnet-5"
+        fake2.models["data"][0]["id"] = model
+        fake2.endpoints["data"]["endpoints"][0]["provider_name"] = "Anthropic"
+        client2 = OpenRouterClient(self.root / "no-cache", model=model, provider_name="Anthropic", transport=fake2, prompt_cache=False)
+        client2.complete([], tools=TOOLS)
+        self.assertNotIn("cache_control", json.loads(fake2.posts[0]["body"]))
 
     def test_missing_fixed_provider_and_missing_tools_fail_closed(self):
         fake = FakeTransport()

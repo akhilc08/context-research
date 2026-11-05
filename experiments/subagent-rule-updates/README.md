@@ -40,7 +40,7 @@ Tests use scripted clients and temporary workspaces. They do not read API keys o
 
 The fixed [configuration](configs/exploratory.json) schedules three repetitions per model, or 72 scored branches (2 briefing modes, 3 delivery arms, 2 worker types, 2 tasks) plus warmup and manager calls per model. GPT-6 Luna and Claude Sonnet 5 each serve as both manager and worker within their own run. This is not a cross-model manager-worker pairing study.
 
-The total spending cap is $20, split into independent $10 model caps. The provider reserves a conservative request cost before each POST and stops on errors with unknown billing. There is no automatic retry of paid requests. It fixes the provider rather than silently falling back, snapshots advertised parameters/prices, logs reported cache usage, and distinguishes billed costs from estimates. Unsupported optional parameters are omitted and the effective settings are saved. Reasoning effort is low where supported, with 4,096 output tokens including reasoning per call.
+The total spending cap is $20, split into independent $10 model caps. The provider reserves a conservative request cost before each POST and stops on errors with unknown billing. There is no automatic retry of paid requests. It fixes the provider rather than silently falling back, snapshots advertised parameters/prices, logs reported cache usage, and distinguishes billed costs from estimates. Unsupported optional parameters are omitted and the effective settings are saved. For Anthropic endpoints the client opts in to prompt caching with a top-level `cache_control` field, because Claude is not cached otherwise. OpenAI caches automatically. Reasoning effort is low where supported, with 4,096 output tokens including reasoning per call.
 
 `OPENROUTER_API_KEY` comes from the environment or the repository-root `.env`. Credentials never enter model prompts or request-body logs.
 
@@ -58,20 +58,20 @@ The CLI refuses paid calls without `--live`, rejects an existing model output di
 
 ## Compaction variant
 
-[`run_compaction.py`](run_compaction.py) and [`compaction.py`](compaction.py) test whether an amendment that arrived as a conversation message survives compaction. It uses the tightening scenario, existing workers only, and the unbriefed scored task. The amendment arrives during an interim read-only task. Ten read-only filler tasks follow, each asking the worker to analyze a different generated service log (about 23k tokens of log output in total), so the amendment ends up as a small, early part of a long history. The logs never mention rules, approvals, or dependencies. Conditions on the same delivery track share one preparation, so `relay_no_compact` and `relay_compact` differ only in compaction. `compaction-001` used two short filler tasks instead.
+[`run_compaction.py`](run_compaction.py) and [`compaction.py`](compaction.py) test whether an amendment that arrived as a conversation message survives compaction. It uses the tightening scenario, existing workers only, and the unbriefed scored task. The amendment arrives during an interim read-only task. Then 25 read-only filler tasks each ask the worker to analyze a different generated service log, about 166k tokens of log output in total. The logs never mention rules, approvals, or dependencies. Compacted conditions compact whenever the rendered history passes about 137k characters (about 50k tokens), which gives about three rounds. Each later round summarizes a history that starts with the previous summary, so an early amendment has to survive repeated summarization. `relay_no_compact` keeps the full history. Each condition has its own preparation. `compaction-001` used two short filler tasks, and `compaction-002` used ten filler tasks with one forced compaction.
 
 | Condition | Amendment delivery | Compacted before the scored task |
 |---|---|---|
-| `stale` | none | yes |
+| `stale` | none | yes, repeatedly |
 | `relay_no_compact` | relayed into the worker's conversation | no |
-| `relay_compact` | relayed into the worker's conversation | yes |
-| `refresh_compact` | harness rule block refreshed | yes |
+| `relay_compact` | relayed into the worker's conversation | yes, repeatedly |
+| `refresh_compact` | harness rule block refreshed | yes, repeatedly |
 
 Compaction replaces the worker's history with one model-written summary from an ordinary prompt that does not mention rules. The summarizer sees conversation history only, not the harness rule block. The relay is a fixed scripted message, so relay quality is not a variable. Any write or approval request during setup invalidates the run. Keyword flags on each summary are saved for inspection and are not scored.
 
 ```sh
 python3 experiments/subagent-rule-updates/run_compaction.py --live \
-  --model-index 0 --output experiments/subagent-rule-updates/results/compaction-002
+  --model-index 0 --output experiments/subagent-rule-updates/results/compaction-003
 ```
 
 ## Artifacts
