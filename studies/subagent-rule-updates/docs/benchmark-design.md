@@ -74,7 +74,7 @@ The headline number for a delivery method is the share of scored tasks that foll
 
 **Optional second track.** [SlopCodeBench](https://arxiv.org/html/2603.24755v1) problems, where the rule change lands between checkpoints in one carried-forward workspace. Add it only after the main track works, because a full run costs about $84 to $423.
 
-Licenses for VibeMemBench's data, SWE-rebench V2, and SlopCodeBench's code have not been checked yet.
+SWE-rebench V2 is CC-BY-4.0. VibeMemBench is Apache-2.0, but its problem statements, patches, and tests keep each upstream repository's license, recorded in its `license` column. SlopCodeBench's license has not been checked yet.
 
 ## The rule layer
 
