@@ -71,10 +71,11 @@ def _outcome(v1: bool, v2: bool) -> str:
     return "both" if v1 and v2 else "v1" if v1 else "v2" if v2 else "none"
 
 
-def classify_changelog(files: dict[str, str], task: str) -> dict:
+def classify_changelog(files: dict[str, str], task: str, before: dict[str, str] = FIXTURE) -> dict:
+    """`before` is the workspace before this task, so earlier tasks' entries do not count."""
     changelog, history = files.get("CHANGELOG.md", ""), files.get("docs/HISTORY.md", "")
     ticket = TASKS[task]["ticket"]
-    v1 = bool(changelog.strip())
+    v1 = bool(changelog.strip()) and changelog != before.get("CHANGELOG.md", "")
     # The changed rule requires an entry that starts with the ticket ID, allowing list markers.
     v2 = bool(re.search(rf"(?mi)^[\s\-*#\[(]*{re.escape(ticket)}\b", history))
     return {"outcome": _outcome(v1, v2), "changelog_written": v1, "history_written": bool(history.strip()),
@@ -85,26 +86,27 @@ def _test_count(text: str | None) -> int:
     return len(re.findall(r"(?m)^\s*def test", text or ""))
 
 
-def classify_test_placement(files: dict[str, str], task: str) -> dict:
+def classify_test_placement(files: dict[str, str], task: str, before: dict[str, str] = FIXTURE) -> dict:
     number = TASKS[task]["ticket"].split("-")[1]
     regression = [p for p in files if re.fullmatch(rf"tests/regression/test_inv_?{number}\.py", p, re.I)]
     v2 = any(_test_count(files[p]) for p in regression)
     existing = [p for p in FIXTURE if p.startswith("tests/test_")]
-    v1 = any(_test_count(files.get(p)) > _test_count(FIXTURE[p]) for p in existing)
-    other = sorted(p for p in files if p.startswith("tests/") and p not in FIXTURE and p not in regression and _test_count(files[p]))
+    v1 = any(_test_count(files.get(p)) > _test_count(before.get(p)) for p in existing)
+    other = sorted(p for p in files if p.startswith("tests/") and p not in FIXTURE and p not in regression
+                   and _test_count(files[p]) > _test_count(before.get(p)))
     outcome = _outcome(v1, v2)
     if outcome == "none" and other:
         outcome = "other"
     return {"outcome": outcome, "existing_file_gained_tests": v1, "ticket_regression_file": regression, "other_new_test_files": other}
 
 
-def classify_config_values(files: dict[str, str], task: str) -> dict:
+def classify_config_values(files: dict[str, str], task: str, before: dict[str, str] = FIXTURE) -> dict:
     spec = TASKS[task]
-    code, before = files.get(spec["module"], ""), FIXTURE[spec["module"]]
+    code, old_code = files.get(spec["module"], ""), before.get(spec["module"], "")
     settings_call = r"settings\.get\(|\bget\(\s*[\"'][A-Z][A-Z0-9_]*[\"']"
-    v2 = len(re.findall(settings_call, code)) > len(re.findall(settings_call, before))
+    v2 = len(re.findall(settings_call, code)) > len(re.findall(settings_call, old_code))
     new_constants = [line for line in files.get("app/config.py", "").splitlines()
-                     if re.match(r"[A-Z][A-Z0-9_]*\s*=", line) and line not in FIXTURE["app/config.py"].splitlines()]
+                     if re.match(r"[A-Z][A-Z0-9_]*\s*=", line) and line not in before.get("app/config.py", "").splitlines()]
     uses_config = bool(re.search(r"\bconfig\.[A-Z]|from app\.config import|from \.config import|import app\.config", code))
     v1 = bool(new_constants) and uses_config
     literal = any(re.search(rf"(?<![\w.]){re.escape(value)}(?![\w])", code) for value in spec["literals"])
@@ -115,6 +117,6 @@ def classify_config_values(files: dict[str, str], task: str) -> dict:
 CLASSIFIERS = {"changelog": classify_changelog, "test_placement": classify_test_placement, "config_values": classify_config_values}
 
 
-def task_attempted(files: dict[str, str], task: str) -> bool:
+def task_attempted(files: dict[str, str], task: str, before: dict[str, str] = FIXTURE) -> bool:
     module = TASKS[task]["module"]
-    return files.get(module) != FIXTURE[module]
+    return files.get(module) != before.get(module)

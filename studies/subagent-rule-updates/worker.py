@@ -103,12 +103,25 @@ class Workspace:
 def run_worker(client: Any, system: str, history: list[dict], workspace: Workspace, message: str, *,
                tag: str, max_calls: int = 12) -> dict:
     """Append one user message and run the tool loop until the worker answers without tools."""
+    result = run_agent(client, system, history, message, tools=TOOLS, tag=tag, max_calls=max_calls,
+                       execute=lambda name, args, i: workspace.execute(name, args, call_index=i))
+    return {**result, "events": copy.deepcopy(workspace.events), "files": workspace.snapshot()}
+
+
+def final_text(history: list[dict]) -> str:
+    last = history[-1] if history else {}
+    return (last.get("content") or "") if last.get("role") == "assistant" else ""
+
+
+def run_agent(client: Any, system: str, history: list[dict], message: str, *, tools: list[dict],
+              execute: Any, tag: str, max_calls: int) -> dict:
+    """Generic tool loop. execute(name, args, call_index) returns a JSON-serializable tool result."""
     history = copy.deepcopy(history) + [{"role": "user", "content": message}]
     started = time.monotonic()
     responses, status, error = [], "call_limit", None
     for i in range(max_calls):
         try:
-            response = client.complete([{"role": "system", "content": system}] + copy.deepcopy(history), tools=TOOLS, tag=f"{tag}/call{i}")
+            response = client.complete([{"role": "system", "content": system}] + copy.deepcopy(history), tools=tools, tag=f"{tag}/call{i}")
         except Exception as exc:
             status, error = "provider_error", f"{type(exc).__name__}: {exc}"
             break
@@ -143,7 +156,7 @@ def run_worker(client: Any, system: str, history: list[dict], workspace: Workspa
             break
         history.append(msg)
         for call_id, name, args in parsed:
-            result = workspace.execute(name, args, call_index=i)
+            result = execute(name, args, i)
             history.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)})
     return {"status": status, "error": error, "history": history, "responses": responses,
-            "wallclock_seconds": time.monotonic() - started, "events": copy.deepcopy(workspace.events), "files": workspace.snapshot()}
+            "wallclock_seconds": time.monotonic() - started}
