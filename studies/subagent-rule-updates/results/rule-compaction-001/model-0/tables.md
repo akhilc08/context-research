@@ -13,5 +13,5 @@ Branches: 70, statuses: {'finished': 69, 'provider_error': 1}.
 
 | Changed rule | Final summaries | mentions new version | mentions old version only | mentions neither |
 |---|---|---|---|---|
-| changelog | 9 | 9 | 0 | 0 |
-| config_values | 9 | 9 | 0 | 0 |
+| changelog (relay_compact) | 9 | 9 | 0 | 0 |
+| config_values (relay_compact) | 9 | 9 | 0 | 0 |

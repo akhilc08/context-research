@@ -13,5 +13,5 @@ Branches: 8, statuses: {'finished': 8}.
 
 | Changed rule | Final summaries | mentions new version | mentions old version only | mentions neither |
 |---|---|---|---|---|
-| changelog | 1 | 1 | 0 | 0 |
-| config_values | 1 | 1 | 0 | 0 |
+| changelog (relay_compact) | 1 | 1 | 0 | 0 |
+| config_values (relay_compact) | 1 | 1 | 0 | 0 |

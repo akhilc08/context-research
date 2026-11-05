@@ -1,15 +1,17 @@
 """Offline tests for rule_compaction.py with a scripted worker and summarizer."""
 import json
 import tempfile
+from unittest import mock
 import unittest
 from pathlib import Path
 
 import compaction as C
+import pi_compaction as PI
 import rule_compaction as RC
 import scenarios as S
 
 CONFIG = {"repetitions": 1, "order_seed": 1, "max_worker_calls": 6, "filler_tasks": 3, "log_lines": 20,
-          "compact_threshold_chars": 1500, "min_compactions": 1, "conditions": list(RC.CONDITIONS)}
+          "compact_threshold_chars": 1500, "min_compactions": 1, "conditions": ["relay_no_compact", "relay_compact"]}
 
 
 def call(name, args, n):
@@ -31,7 +33,7 @@ class Scripted:
 
     def complete(self, messages, *, tools=None, tag="", **kwargs):
         self.n += 1
-        if messages[0]["content"] == C.SUMMARIZER_SYSTEM:
+        if messages[0]["content"] in (C.SUMMARIZER_SYSTEM, PI.P["SUMMARIZATION_SYSTEM_PROMPT"]):
             self.summaries += 1
             text = messages[1]["content"]
             kept = [S.RULES[r][v] for r in S.RULES for v in ("v1", "v2") if S.RULES[r][v] in text]
@@ -93,7 +95,22 @@ class RuleCompactionTest(unittest.TestCase):
         for change in RC.CHANGES:
             self.assertEqual(summary["cells"][f"{change}__relay_compact"]["changed_outcomes"], {"v1": 2})
             self.assertEqual(summary["cells"][f"{change}__relay_no_compact"]["changed_outcomes"], {"v2": 2})
-            self.assertEqual(summary["summaries"][change]["old_only"], 1)
+            self.assertEqual(summary["summaries"][f"{change}__relay_compact"]["old_only"], 1)
+
+
+class PiConditionTest(unittest.TestCase):
+    def test_pi_condition_compacts_on_schedule(self):
+        config = {**CONFIG, "filler_tasks": 6, "pi_compact_after_steps": [2, 4], "conditions": ["relay_compact_pi"]}
+        # Scripted workers write tiny histories, so shrink the verbatim tail to force real cuts.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(PI, "KEEP_RECENT_TOKENS", 20):
+            out = Path(tmp)
+            RC.execute(Scripted(), out, config)
+            record = json.loads((out / "rep-00/prep/changelog__relay_compact_pi/record.json").read_text())
+            self.assertTrue(record["setup_valid"])
+            self.assertEqual([c["after_step"] for c in record["compactions"]], [2, 4])
+            self.assertTrue(record["final_history"][0]["content"].startswith(PI.P["COMPACTION_SUMMARY_PREFIX"]))
+            summary = RC.analyze(out)
+            self.assertEqual(summary["cells"]["changelog__relay_compact_pi"]["changed_outcomes"], {"v2": 2})
 
 
 if __name__ == "__main__":

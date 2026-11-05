@@ -11,6 +11,7 @@ system prompt and tools (worker.py), under which screen-001 validated the rules.
 system-prompt rule block. No API calls without --live.
 
 python3 rule_compaction.py --live --output results/rule-compaction-001 [--repetitions 1]
+python3 rule_compaction.py --live --config configs/rule-compaction-pi.json --output results/rule-compaction-pi-001
 python3 rule_compaction.py --analyze results/rule-compaction-001/model-0
 """
 from __future__ import annotations
@@ -30,6 +31,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import compaction as C
+import pi_compaction as PI
 import scenarios as S
 import worker as W
 
@@ -37,7 +39,10 @@ HERE = Path(__file__).resolve().parent
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "AGENTS.md").exists())
 RULE_ORDER = ("changelog", "config_values")
 CHANGES = RULE_ORDER
-CONDITIONS = {"relay_no_compact": False, "relay_compact": True}  # condition -> rolling compaction
+# condition -> compactor. "generic" compacts at the size threshold with compaction.py and replaces the
+# whole history. "pi" runs pi_compaction.py after the configured steps, the steps where generic
+# compaction happened in rule-compaction-001 and 002 (8, 16, 24).
+CONDITIONS = {"relay_no_compact": None, "relay_compact": "generic", "relay_compact_pi": "pi"}
 WARMUP = "Read README.md and report what it says. Do not change any files."
 INTERIM_TASK = "Read docs/architecture.md and report what it contains. Do not change any files."
 RELAY_BRIEFING = "The user has amended one of their rules since you started. Their amendment is relayed below."
@@ -91,11 +96,12 @@ def read_only_step(client: Any, history: list[dict], stepdir: Path, message: str
 
 
 def prepare(client: Any, warm: list[dict], change: str, condition: str, prepdir: Path, tag: str, config: dict) -> tuple[list[dict], dict]:
-    rolling = CONDITIONS[condition]
+    compactor = CONDITIONS[condition]
+    pi_state = PI.PiState()
     count, lines, threshold = config["filler_tasks"], config["log_lines"], config["compact_threshold_chars"]
     extra = C.filler_files(count, lines)
     history = copy.deepcopy(warm)
-    record = {"condition": condition, "change": change, "rolling": rolling, "steps": [], "compactions": []}
+    record = {"condition": condition, "change": change, "compactor": compactor, "steps": [], "compactions": []}
     messages = [relay_message(change)] + [C.envelope(t) for t in C.filler_tasks(count, lines)]
     for index, text in enumerate(messages):
         history, step = read_only_step(client, history, prepdir / f"step-{index:02d}", text, f"{tag}/step{index:02d}", config, extra)
@@ -103,13 +109,21 @@ def prepare(client: Any, warm: list[dict], change: str, condition: str, prepdir:
         if step["status"] != "finished" or step["mutations"]:
             record["setup_valid"] = False
             return history, record
-        if rolling and len(C.render_history(history)) > threshold:
+        compact_tag = f"{tag}/compact{len(record['compactions'])}"
+        if compactor == "generic" and len(C.render_history(history)) > threshold:
             session = SimpleNamespace(history=history)
-            event = C.compact(client, session, f"{tag}/compact{len(record['compactions'])}")
-            event.update({"after_step": index, "markers": summary_markers(event["summary"], change)})
-            record["compactions"].append(event)
+            event = C.compact(client, session, compact_tag)
             history = session.history
-    record["setup_valid"] = not rolling or len(record["compactions"]) >= config["min_compactions"]
+        elif compactor == "pi" and index in config["pi_compact_after_steps"]:
+            history, event = PI.compact(client, history, pi_state, compact_tag)
+        else:
+            continue
+        event.update({"after_step": index, "markers": summary_markers(event.get("summary", ""), change)})
+        record["compactions"].append(event)
+    if compactor == "pi":
+        record["setup_valid"] = [c["after_step"] for c in record["compactions"] if not c["skipped"]] == config["pi_compact_after_steps"]
+    else:
+        record["setup_valid"] = compactor is None or len(record["compactions"]) >= config["min_compactions"]
     record["final_history_chars"] = len(C.render_history(history))
     record["final_history"] = history
     return history, record
@@ -184,13 +198,17 @@ def analyze(output: Path) -> dict:
     lines += ["", "## Final summary keywords (inspection only, not scored)", "",
               "| Changed rule | Final summaries | mentions new version | mentions old version only | mentions neither |", "|---|---|---|---|---|"]
     for change in CHANGES:
-        finals = [r["compactions"][-1]["markers"] for r in records if r["change"] == change and r.get("compactions")]
-        new = sum(m[f"{change}_v2"] for m in finals)
-        old_only = sum(m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
-        neither = sum(not m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
-        summary["summaries"][change] = {"final_summaries": len(finals), "new": new, "old_only": old_only, "neither": neither,
-                                        "rounds": [len(r["compactions"]) for r in records if r["change"] == change and r.get("compactions")]}
-        lines.append(f"| {change} | {len(finals)} | {new} | {old_only} | {neither} |")
+        for condition in CONDITIONS:
+            group = [r for r in records if r["change"] == change and r["condition"] == condition and r.get("compactions")]
+            if not group:
+                continue
+            finals = [r["compactions"][-1]["markers"] for r in group]
+            new = sum(m[f"{change}_v2"] for m in finals)
+            old_only = sum(m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
+            neither = sum(not m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
+            summary["summaries"][f"{change}__{condition}"] = {"final_summaries": len(finals), "new": new, "old_only": old_only,
+                                                              "neither": neither, "rounds": [len(r["compactions"]) for r in group]}
+            lines.append(f"| {change} ({condition}) | {len(finals)} | {new} | {old_only} | {neither} |")
     save(output / "summary.json", summary)
     (output / "tables.md").write_text("\n".join(lines) + "\n")
     return summary
@@ -225,7 +243,7 @@ def main() -> int:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         output = root / f"model-{args.model_index}"
         output.mkdir()
-        for name in ("scenarios.py", "worker.py", "compaction.py", "rule_compaction.py", "provider.py"):
+        for name in ("scenarios.py", "worker.py", "compaction.py", "pi_compaction.py", "pi_compaction_prompts.json", "rule_compaction.py", "provider.py"):
             (output / "source").mkdir(exist_ok=True)
             shutil.copyfile(HERE / name, output / "source" / name)
         shutil.copyfile(args.config, output / "source" / "config.json")
