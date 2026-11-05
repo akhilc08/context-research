@@ -66,6 +66,44 @@ class ProviderTests(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in (self.root / "run" / "requests.jsonl").read_text().splitlines()]
 
+    def test_hung_request_is_retried_and_keeps_its_reservation(self):
+        client, fake = self.client(FakeTransport([TimeoutError(), success()]), timeout_retries=1)
+        self.assertEqual(client.complete([{"role": "user", "content": "hi"}], tag="t")["choices"][0]["message"]["content"], "done")
+        summary = client.summary()
+        self.assertEqual((summary["requests"], summary["completed_requests"], summary["timeouts_retried"]), (2, 1, 1))
+        self.assertGreater(summary["reserved_cost_usd"], 0)  # the abandoned attempt still counts against the budget
+        self.assertFalse(summary["stopped"])
+        self.assertEqual([r["tag"] for r in self.records() if r["method"] == "POST"], ["t", "t/retry1"])
+
+    def test_timeouts_are_not_retried_by_default_or_past_the_limit(self):
+        client, _ = self.client(FakeTransport([TimeoutError()]))
+        with self.assertRaises(ProviderError):
+            client.complete([{"role": "user", "content": "hi"}])
+        self.assertTrue(client.summary()["stopped"])
+        client2 = OpenRouterClient(self.root / "two", transport=FakeTransport([TimeoutError(), TimeoutError()]), timeout_retries=1)
+        with self.assertRaises(ProviderError):
+            client2.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual(client2.summary()["timeouts_retried"], 1)
+
+    def test_wrapped_connect_timeout_is_retried(self):
+        import urllib.error
+        client, fake = self.client(FakeTransport([urllib.error.URLError(TimeoutError("connect")), success()]), timeout_retries=1)
+        client.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
+
+    def test_retry_blocked_by_cap_leaves_client_stopped(self):
+        client, fake = self.client(FakeTransport([TimeoutError(), success()]), timeout_retries=1, max_calls=1)
+        with self.assertRaises(BudgetExceeded):
+            client.complete([{"role": "user", "content": "hi"}])
+        summary = client.summary()
+        self.assertEqual((summary["stopped"], summary["timeouts_retried"], len(fake.posts)), (True, 0, 1))
+
+    def test_other_transport_failures_are_never_retried(self):
+        client, fake = self.client(FakeTransport([ConnectionResetError(), success()]), timeout_retries=2)
+        with self.assertRaises(ProviderError):
+            client.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual(len(fake.posts), 1)
+
     def test_exact_full_logging_and_tools_each_call(self):
         response = success()
         response["extra"] = {"unknown": [1, "retained"]}

@@ -297,7 +297,7 @@ def main() -> int:
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
                                   temperature=config["temperature"], max_tokens=config["max_output_tokens"],
-                                  reasoning_effort=config["reasoning_effort"])
+                                  reasoning_effort=config["reasoning_effort"], timeout_retries=config.get("timeout_retries", 0))
         failure = None
         try:
             execute(client, output, config)

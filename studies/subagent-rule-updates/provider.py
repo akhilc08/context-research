@@ -7,7 +7,7 @@ are unauthenticated; POSTs carry authorization only in headers, never logs.
 Use a fresh output directory per client/run; an existing budget ledger is refused
 rather than silently resetting a cap. This synchronous client is single-owner,
 not a cross-process budget coordinator. All failed attempts stop the client; no
-HTTP or timeout retries are made. Unknown billing retains the entire reservation.
+HTTP retries are made. Hung requests are retried only when timeout_retries is set. Unknown billing retains the entire reservation.
 Prices/usage-derived costs are conservative estimates, not billing observations.
 """
 
@@ -34,6 +34,10 @@ TOKEN_ALLOWANCE = 4096
 
 class ProviderError(RuntimeError):
     """Provider/protocol failure; inspect requests.jsonl for the raw response."""
+
+
+class TransportTimeout(ProviderError):
+    """The request hung past the transport timeout. Billing is unknown."""
 
 
 class BudgetExceeded(ProviderError):
@@ -70,7 +74,7 @@ def load_key(repository_root: Path | None = None) -> str:
 def _transport(method: str, url: str, *, headers: dict, body: bytes | None):
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with urllib.request.urlopen(request, timeout=120) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
@@ -110,10 +114,15 @@ class OpenRouterClient:
         provider_name: str = "OpenAI",
         *,
         reasoning_effort: str = "low",
+        timeout_retries: int = 0,
         transport: Callable | None = None,
         prompt_cache: bool = True,
     ):
         self.prompt_cache = prompt_cache
+        # Retries apply only to hung requests. Each abandoned attempt keeps its full reservation
+        # as committed spend, so the dollar cap holds even if the provider billed it.
+        self.timeout_retries = _tokens(timeout_retries, "timeout_retries")
+        self._timeouts_retried = 0
         self.output_dir = Path(output_dir)
         self.model = model
         self.provider_name = provider_name
@@ -244,6 +253,7 @@ class OpenRouterClient:
         raw = None
         parsed = None
         failure = None
+        timed_out = False
         try:
             status, raw = self._transport(method, url, headers=headers, body=body)
             if not isinstance(raw, bytes):
@@ -257,6 +267,8 @@ class OpenRouterClient:
         except Exception as error:
             # Exception messages can contain headers/credentials; log type only.
             failure = type(error).__name__
+            # urllib raises socket read timeouts directly and wraps connect-stage timeouts in URLError.
+            timed_out = isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
         latency = time.monotonic() - start
         raw_text = None
         raw_base64 = None
@@ -279,6 +291,8 @@ class OpenRouterClient:
             os.fsync(stream.fileno())
         if method == "POST":
             self._latency += latency
+        if timed_out:
+            raise TransportTimeout("Transport failed (" + failure + "); billing unknown")
         if failure:
             raise ProviderError("Transport failed (" + failure + "); no retry")
         if not isinstance(status, int) or not 200 <= status < 300:
@@ -309,30 +323,41 @@ class OpenRouterClient:
         # allowance covers message framing and provider-side tool formatting.
         prompt_price = max(v for k, v in self._prices.items() if k != "completion" and v is not None)
         reservation = ((len(body) + TOKEN_ALLOWANCE) * prompt_price + self.max_tokens * self._prices["completion"]) * SAFETY_MARGIN
-        if self._requests >= self.max_calls or self._actual + self._estimated + self._reserved + reservation > self.budget:
-            raise BudgetExceeded("Request would exceed the dollar or request cap")
-        self._reserved += reservation
-        self._requests += 1
-        self._stopped = True  # Persist a pending/unknown attempt before sending.
-        self._save_budget()
-        try:
-            response = self._fetch("POST", BASE_URL + "/chat/completions", body, tag)
-            self._account(response, reservation)
-            if response.get("error"):
-                raise ProviderError("Provider returned an error")
-            choices = response.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise ProviderError("Missing choices")
-            choice = choices[0]
-            if choice.get("finish_reason") not in ("stop", "tool_calls"):
-                raise ProviderError("Response truncated, filtered, or missing finish_reason")
-            if not isinstance(choice.get("message"), dict):
-                raise ProviderError("Missing response message")
-            self._completed += 1
-            self._stopped = False
-            return response
-        finally:
+        for attempt in range(self.timeout_retries + 1):
+            if self._requests >= self.max_calls or self._actual + self._estimated + self._reserved + reservation > self.budget:
+                raise BudgetExceeded("Request would exceed the dollar or request cap")
+            if attempt:
+                self._timeouts_retried += 1
+            self._reserved += reservation
+            self._requests += 1
+            self._stopped = True  # Persist a pending/unknown attempt before sending.
             self._save_budget()
+            try:
+                try:
+                    response = self._fetch("POST", BASE_URL + "/chat/completions", body, f"{tag}/retry{attempt}" if attempt else tag)
+                except TransportTimeout:
+                    if attempt == self.timeout_retries:
+                        raise
+                    # The hung attempt's reservation stays in _reserved for the rest of the run, and the
+                    # client stays stopped unless the retry passes the caps and is sent.
+                    continue
+                self._account(response, reservation)
+                if response.get("error"):
+                    raise ProviderError("Provider returned an error")
+                choices = response.get("choices")
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    raise ProviderError("Missing choices")
+                choice = choices[0]
+                if choice.get("finish_reason") not in ("stop", "tool_calls"):
+                    raise ProviderError("Response truncated, filtered, or missing finish_reason")
+                if not isinstance(choice.get("message"), dict):
+                    raise ProviderError("Missing response message")
+                self._completed += 1
+                self._stopped = False
+                return response
+            finally:
+                self._save_budget()
+        raise AssertionError("unreachable")
 
     def _account(self, response: dict, reservation: Decimal):
         usage = response.get("usage")
@@ -398,6 +423,7 @@ class OpenRouterClient:
             "known_cache_write_tokens": self._cache_write,
             "cache_write_usage_unknown_requests": self._cache_write_unknown + unaccounted,
             "latency_seconds": self._latency, "stopped": self._stopped,
-            "retry_policy": "none; failed attempts abort; unknown billing retains full reservation",
+            "timeout_retries": self.timeout_retries, "timeouts_retried": self._timeouts_retried,
+            "retry_policy": "only hung requests are retried, up to timeout_retries; every other failure aborts; unknown billing retains full reservation",
             "estimate_policy": "maximum fixed-provider prices; cache discounts only when reported; unknown writes use maximum input price",
         }
