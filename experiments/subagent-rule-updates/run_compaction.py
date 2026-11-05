@@ -49,6 +49,8 @@ def prepare_condition(client: Any, warm: H.Session, condition: str, scenario: st
         if result["status"] != "finished" or mutations:
             record["setup_valid"] = False
             return session, record
+        # Verified read-only: drop the duplicated filler copy, keep the tool event log.
+        shutil.rmtree(prepdir / f"step-{index:02d}" / "workspace")
         if rolling and len(C.render_history(session.history)) > threshold:
             event = C.compact(client, session, f"{tag}/compact{len(record['compactions'])}")
             event["after_step"] = index
