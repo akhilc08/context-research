@@ -100,6 +100,20 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual({r["condition"] for r in summary["groups"]}, {"relay_no_compact", "relay_compact"})
         self.assertEqual(sorted(p.name for p in (output / "rep-00/prep").iterdir()), ["relay_compact", "relay_no_compact"])
 
+    def test_condition_repetition_caps_run_the_control_fewer_times(self):
+        from run_compaction import planned_branches, selected_conditions
+        config = {"repetitions": 3, "conditions": ["relay_no_compact", "relay_compact"], "condition_repetitions": {"relay_no_compact": 1}}
+        self.assertEqual(selected_conditions(config, 0), ["relay_no_compact", "relay_compact"])
+        self.assertEqual(selected_conditions(config, 2), ["relay_compact"])
+        self.assertEqual(planned_branches(config), (2 + 1 + 1) * 2)
+        run = {**config, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": 6,
+               "log_lines": 40, "compact_threshold_chars": 9000, "min_compactions": 2}
+        output = Path(tempfile.mkdtemp())
+        save(output / "manifest.json", {"config": run, "selected_model": {"id": "scripted"}, "planned_branches": planned_branches(run)})
+        execute(Scripted(), output, run)
+        rows = {r["condition"]: r["recorded"] for r in analyze(output)["groups"]}
+        self.assertEqual(rows, {"relay_no_compact": 1, "relay_compact": 3})
+
     def test_unknown_condition_is_rejected(self):
         from run_compaction import selected_conditions
         with self.assertRaises(ValueError):

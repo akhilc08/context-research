@@ -26,13 +26,22 @@ REPO = HERE.parents[1]
 ERRORS = {"provider_error", "delivery_instrumentation_error", "model_protocol_error"}
 
 
-def selected_conditions(config: dict) -> list[str]:
-    """Optional subset of conditions, in canonical order. Defaults to all."""
+def selected_conditions(config: dict, rep: int | None = None) -> list[str]:
+    """Optional subset of conditions, in canonical order. Defaults to all.
+
+    condition_repetitions caps how many repetitions a condition runs, so an expensive
+    control can run fewer times than the main condition. rep=None lists every condition.
+    """
     chosen = config.get("conditions", list(C.CONDITIONS))
-    unknown = set(chosen) - set(C.CONDITIONS)
+    caps = config.get("condition_repetitions", {})
+    unknown = (set(chosen) | set(caps)) - set(C.CONDITIONS)
     if unknown or not chosen:
         raise ValueError(f"Unknown or empty conditions: {sorted(unknown)}")
-    return [c for c in C.CONDITIONS if c in chosen]
+    return [c for c in C.CONDITIONS if c in chosen and (rep is None or rep < caps.get(c, config["repetitions"]))]
+
+
+def planned_branches(config: dict) -> int:
+    return sum(len(selected_conditions(config, rep)) for rep in range(config["repetitions"])) * len(H.TASKS)
 
 
 def prepare_condition(client: Any, warm: H.Session, condition: str, scenario: str, prepdir: Path, tag: str,
@@ -83,14 +92,14 @@ def execute(client: Any, output: Path, config: dict) -> None:
         if not result["setup_valid"]:
             raise RuntimeError(f"Invalid warmup in repetition {rep}")
         prepared = {}
-        for condition in selected_conditions(config):
+        for condition in selected_conditions(config, rep):
             session, record = prepare_condition(client, warm, condition, scenario, repdir / "prep" / condition,
                                                 f"rep{rep}/prep/{condition}", config)
             save(repdir / "prep" / condition / "record.json", record)
             if not record["setup_valid"]:
                 raise RuntimeError(f"Invalid preparation for {condition} in repetition {rep}")
             prepared[condition] = session
-        branches = [(c, t) for c in selected_conditions(config) for t in H.TASKS]
+        branches = [(c, t) for c in selected_conditions(config, rep) for t in H.TASKS]
         random.Random(config["order_seed"] + rep).shuffle(branches)
         save(repdir / "branch_order.json", branches)
         for index, (condition, task) in enumerate(branches):
@@ -196,7 +205,7 @@ def main() -> int:
             "source_hashes": sources, "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
             "rules": H.rules(config["scenario"]), "user_messages": H.user_messages(config["scenario"]),
             "conditions": {k: list(v) for k, v in C.CONDITIONS.items()}, "tracks": C.TRACKS, "summarizer_system": C.SUMMARIZER_SYSTEM,
-            "planned_branches": config["repetitions"] * len(selected_conditions(config)) * len(H.TASKS)})
+            "planned_branches": planned_branches(config)})
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
                                   temperature=config["temperature"], max_tokens=config["max_output_tokens"],
