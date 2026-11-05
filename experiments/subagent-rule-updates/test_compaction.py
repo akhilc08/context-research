@@ -1,6 +1,7 @@
 """Offline tests for the compaction variant with a scripted client."""
 import copy
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,7 +28,9 @@ class Scripted:
         call = content = None
         scored = "Update httpx from" in text or "Update rich from" in text
         if not scored:
-            call, content = (("read_file", {"path": "requirements.txt"}), None) if step == 0 else (None, "Done reading.")
+            match = re.search(r"Read (logs/\S+\.log)", text)
+            path = match[1] if match else "requirements.txt"
+            call, content = (("read_file", {"path": path}), None) if step == 0 else (None, "Done reading.")
         elif step == 0:
             call = ("write_file", {"path": "requirements.txt", "content": "httpx==0.27.1\nrich==13.7.0\n"}) if text.split("\n")[1].startswith("Update httpx") else \
                    ("request_approval", {"package": "rich", "current_version": "13.7.0", "proposed_version": "13.8.0"})
@@ -43,10 +46,9 @@ class Scripted:
 
 
 class CompactionTests(unittest.TestCase):
-    def run_study(self, client):
-        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten"}
-        directory = tempfile.mkdtemp()
-        output = Path(directory)
+    def run_study(self, client, fillers=3):
+        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": fillers}
+        output = Path(tempfile.mkdtemp())
         save(output / "manifest.json", {"config": config, "selected_model": {"id": "scripted"}, "planned_branches": 8})
         execute(client, output, config)
         return output, analyze(output)
@@ -55,35 +57,50 @@ class CompactionTests(unittest.TestCase):
         output, summary = self.run_study(Scripted())
         self.assertEqual(summary["recorded_branches"], 8)
         self.assertEqual(sum(r["task_success"] for r in summary["groups"]), 8)
-        prep = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
-        for condition, (delivery, compacted) in C.CONDITIONS.items():
-            history = prep[condition]["checkpoint"]["history"]
-            self.assertEqual("compaction" in prep[condition], compacted)
+        conditions = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/conditions/*/record.json")}
+        tracks = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
+        self.assertEqual(set(tracks), set(C.TRACKS))
+        # Relay conditions share one preparation; only compaction differs.
+        self.assertEqual(conditions["relay_compact"]["track_checkpoint_hash"], conditions["relay_no_compact"]["track_checkpoint_hash"])
+        for condition, (track, compacted) in C.CONDITIONS.items():
+            history = conditions[condition]["checkpoint"]["history"]
+            self.assertEqual("compaction" in conditions[condition], compacted)
             if compacted:
                 self.assertEqual(len(history), 1)
                 self.assertTrue(history[0]["content"].startswith(C.SUMMARY_PREFIX))
             else:
                 self.assertTrue(any(H.AMENDMENT_TIGHTEN in str(m.get("content")) for m in history))
-            self.assertEqual(prep[condition]["checkpoint"]["rule_version"], "R1" if delivery == "refresh" else "R0")
+            self.assertEqual(conditions[condition]["checkpoint"]["rule_version"], C.TRACKS[track]["rule_version"])
         rows = [json.loads(p.read_text()) for p in output.glob("rep-00/branches/*/result.json")]
         self.assertTrue(all(r["delivery_verified"] for r in rows))
         for row in rows:
             block = row["requests"][0]["messages"][0]["content"]
-            if row["condition"] == "refresh_compact":
-                self.assertIn(H.R1, block)
-            else:
-                self.assertIn(H.R0_TIGHTEN, block)
+            self.assertIn(H.R1 if row["condition"] == "refresh_compact" else H.R0_TIGHTEN, block)
 
-    def test_relay_reaches_summarizer_only_in_relay_conditions(self):
+    def test_filler_is_long_neutral_and_reaches_the_summarizer(self):
         client = Scripted()
-        self.run_study(client)
-        summarizer_inputs = {tag.split("/")[2]: msgs[1]["content"] for tag, msgs in client.calls if tag.endswith("/compact")}
-        self.assertIn(H.AMENDMENT_TIGHTEN, summarizer_inputs["relay_compact"])
-        self.assertNotIn(H.AMENDMENT_TIGHTEN, summarizer_inputs["stale"])
-        self.assertNotIn(H.AMENDMENT_TIGHTEN, summarizer_inputs["refresh_compact"])
-        # The summarizer never sees the harness rule block.
-        for text in summarizer_inputs.values():
+        output, _ = self.run_study(client, fillers=4)
+        track = json.loads((output / "rep-00/prep/relay/record.json").read_text())
+        self.assertEqual(len(track["steps"]), 5)
+        self.assertGreater(track["history_chars"], 20000)
+        logs = "".join(C.filler_files(4).values()).lower()
+        for word in ("approv", "dependenc", "minor", "rule"):
+            self.assertNotIn(word, logs)
+        inputs = {tag.split("/")[2]: msgs[1]["content"] for tag, msgs in client.calls if "/compact/" in tag}
+        self.assertIn(H.AMENDMENT_TIGHTEN, inputs["relay_compact"])
+        self.assertNotIn(H.AMENDMENT_TIGHTEN, inputs["stale"])
+        self.assertNotIn(H.AMENDMENT_TIGHTEN, inputs["refresh_compact"])
+        for text in inputs.values():
             self.assertNotIn("[User rule snapshot", text)
+            self.assertIn("ERROR", text)
+
+    def test_logs_are_deterministic(self):
+        self.assertEqual(C.log_file(3), C.log_file(3))
+        self.assertNotEqual(C.log_file(3), C.log_file(4))
+
+    def test_worker_instructions_treat_relays_as_the_users_own_words(self):
+        self.assertNotIn("authenticated", H.WORKER_SYSTEM)
+        self.assertIn("user's own words", H.WORKER_SYSTEM)
 
     def test_setup_write_invalidates_preparation(self):
         class Writer(Scripted):
