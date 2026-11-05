@@ -19,6 +19,11 @@ TRACKS = {
     "none": {"relay": False, "rule_version": "R0"},
     "relay": {"relay": True, "rule_version": "R0"},
     "refresh": {"relay": False, "rule_version": "R1"},
+    # Mechanism checks. Each changes one part of the suspected conflict between the stale
+    # system-prompt rule and the summarized amendment.
+    "relay_reinsert": {"relay": True, "rule_version": "R0", "reinsert_relay": True},
+    "relay_inline": {"relay": True, "rule_version": None, "inline_u0": True},
+    "relay_noblock": {"relay": True, "rule_version": None},
 }
 # condition -> (track, rolling compaction). Rolling conditions compact whenever the history
 # passes a size threshold, so an early amendment can be summarized several times.
@@ -27,7 +32,12 @@ CONDITIONS = {
     "relay_no_compact": ("relay", False),
     "relay_compact": ("relay", True),
     "refresh_compact": ("refresh", True),
+    "relay_compact_reinsert": ("relay_reinsert", True),
+    "relay_compact_inline": ("relay_inline", True),
+    "relay_compact_noblock": ("relay_noblock", True),
 }
+INLINE_U0_LABEL = "original author: user | the user's first rule message in this session"
+REINSERT_TASK = "No new task. The harness is re-delivering a user amendment that was relayed earlier in this session."
 INTERIM_TASK = "Read RELEASE_NOTES.md and report what it contains. Do not change any files."
 # Scripted, fixed relay text so relay quality is not a variable here.
 RELAY_BRIEFING = "The user has amended their dependency rules since you started. Their amendment is relayed below."
@@ -80,6 +90,17 @@ def interim_message(relay: bool, scenario: str) -> str:
     if not relay:
         return envelope(INTERIM_TASK)
     return envelope(INTERIM_TASK, RELAY_BRIEFING, f"U1 | {H.RELAY_LABELS['U1']}\n{H.SCENARIOS[scenario]['U1']}")
+
+
+def inline_u0_message(scenario: str) -> str:
+    """The original rule as a relayed user message in the conversation instead of a system-prompt snapshot."""
+    return envelope("No task. Recording the user's dependency rule for this session.",
+                    relay=f"U0 | {INLINE_U0_LABEL}\n{H.SCENARIOS[scenario]['U0']}")
+
+
+def reinsert_message(scenario: str) -> str:
+    """The verbatim relayed amendment, re-added after a compaction."""
+    return envelope(REINSERT_TASK, RELAY_BRIEFING, f"U1 | {H.RELAY_LABELS['U1']}\n{H.SCENARIOS[scenario]['U1']}")
 
 
 def render_history(history: list[dict]) -> str:

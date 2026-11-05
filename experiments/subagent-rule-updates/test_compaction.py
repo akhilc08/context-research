@@ -56,8 +56,9 @@ class CompactionTests(unittest.TestCase):
 
     def test_rolling_conditions_compact_repeatedly_and_relay_control_never_does(self):
         output, summary = self.run_study(Scripted())
-        self.assertEqual(summary["recorded_branches"], 8)
-        self.assertEqual(sum(r["task_success"] for r in summary["groups"]), 8)
+        expected = len(C.CONDITIONS) * len(H.TASKS)
+        self.assertEqual(summary["recorded_branches"], expected)
+        self.assertEqual(sum(r["task_success"] for r in summary["groups"]), expected)
         prep = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
         for condition, (track, rolling) in C.CONDITIONS.items():
             record = prep[condition]
@@ -74,7 +75,8 @@ class CompactionTests(unittest.TestCase):
         self.assertTrue(all(r["delivery_verified"] for r in rows))
         for row in rows:
             block = row["requests"][0]["messages"][0]["content"]
-            self.assertIn(H.R1 if row["condition"] == "refresh_compact" else H.R0_TIGHTEN, block)
+            version = C.TRACKS[C.CONDITIONS[row["condition"]][0]]["rule_version"]
+            self.assertEqual(block, H.WORKER_SYSTEM + H.rule_block(version, "tighten"))
         self.assertEqual(len(summary["summary_diagnostics"]["relay_compact"][0]), len(prep["relay_compact"]["compactions"]))
 
     def test_relay_reaches_only_the_first_relay_summarizer_input_verbatim(self):
@@ -113,6 +115,32 @@ class CompactionTests(unittest.TestCase):
         execute(Scripted(), output, run)
         rows = {r["condition"]: r["recorded"] for r in analyze(output)["groups"]}
         self.assertEqual(rows, {"relay_no_compact": 1, "relay_compact": 3})
+
+    def test_mechanism_checks_change_one_piece_each(self):
+        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": 6,
+                  "log_lines": 40, "compact_threshold_chars": 9000, "min_compactions": 2,
+                  "conditions": ["relay_compact", "relay_compact_reinsert", "relay_compact_inline", "relay_compact_noblock"]}
+        output = Path(tempfile.mkdtemp())
+        save(output / "manifest.json", {"config": config, "selected_model": {"id": "scripted"}, "planned_branches": 8})
+        execute(Scripted(), output, config)
+        self.assertEqual(analyze(output)["recorded_branches"], 8)
+        prep = {p.parent.name: json.loads(p.read_text()) for p in output.glob("rep-00/prep/*/record.json")}
+        # reinsert: stale block kept, verbatim amendment is the last history message after compaction
+        reinsert = prep["relay_compact_reinsert"]["checkpoint"]
+        self.assertEqual(reinsert["rule_version"], "R0")
+        self.assertTrue(any(m["content"] == C.reinsert_message("tighten") for m in reinsert["history"]))
+        # inline: no system block, U0 lives in the conversation and reaches the first summarizer input
+        inline = prep["relay_compact_inline"]
+        self.assertIsNone(inline["checkpoint"]["rule_version"])
+        self.assertIn(H.R0_TIGHTEN, inline["compactions"][0]["messages"][1]["content"])
+        # noblock: no old rule anywhere
+        noblock = prep["relay_compact_noblock"]
+        self.assertIsNone(noblock["checkpoint"]["rule_version"])
+        self.assertNotIn(H.R0_TIGHTEN, noblock["compactions"][0]["messages"][1]["content"])
+        rows = {json.loads(p.read_text())["condition"]: json.loads(p.read_text()) for p in output.glob("rep-00/branches/*__minor/result.json")}
+        self.assertIn(H.R0_TIGHTEN, rows["relay_compact_reinsert"]["requests"][0]["messages"][0]["content"])
+        for name in ("relay_compact_inline", "relay_compact_noblock"):
+            self.assertNotIn("[User rule snapshot", rows[name]["requests"][0]["messages"][0]["content"])
 
     def test_unknown_condition_is_rejected(self):
         from run_compaction import selected_conditions

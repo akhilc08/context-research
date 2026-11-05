@@ -51,6 +51,8 @@ def prepare_condition(client: Any, warm: H.Session, condition: str, scenario: st
     spec = C.TRACKS[track]
     session = warm.fork()
     session.rule_version = spec["rule_version"]
+    if spec.get("inline_u0"):
+        session.history.insert(0, {"role": "user", "content": C.inline_u0_message(scenario)})
     refresh = spec["rule_version"] == "R1"
     count, lines, threshold = config["filler_tasks"], config["log_lines"], config["compact_threshold_chars"]
     extra = C.filler_files(count, lines)
@@ -73,6 +75,8 @@ def prepare_condition(client: Any, warm: H.Session, condition: str, scenario: st
             event = C.compact(client, session, f"{tag}/compact{len(record['compactions'])}")
             event["after_step"] = index
             record["compactions"].append(event)
+            if spec.get("reinsert_relay"):
+                session.history.append({"role": "user", "content": C.reinsert_message(scenario)})
     record["setup_valid"] = not rolling or len(record["compactions"]) >= config.get("min_compactions", 1)
     record["final_history_chars"] = len(C.render_history(session.history))
     record["checkpoint"] = session.checkpoint()

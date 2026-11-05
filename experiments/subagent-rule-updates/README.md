@@ -67,6 +67,8 @@ The CLI refuses paid calls without `--live`, rejects an existing model output di
 | `relay_compact` | relayed into the worker's conversation | yes, repeatedly |
 | `refresh_compact` | harness rule block refreshed | yes, repeatedly |
 
+`configs/compaction-mechanism.json` runs three mechanism checks, all compacted. `relay_compact_reinsert` re-adds the verbatim relayed amendment after each compaction. `relay_compact_inline` moves the original rule out of the system prompt into the conversation as a relayed user message, so it is compacted along with the amendment. `relay_compact_noblock` has no original rule anywhere.
+
 Compaction replaces the worker's history with one model-written summary from an ordinary prompt that does not mention rules. The summarizer sees conversation history only, not the harness rule block. The relay is a fixed scripted message, so relay quality is not a variable. Any write or approval request during setup invalidates the run. Keyword flags on each summary are saved for inspection and are not scored.
 
 ```sh
