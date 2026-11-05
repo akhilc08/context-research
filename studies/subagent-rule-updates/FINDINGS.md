@@ -32,15 +32,26 @@ When the manager relays the amendment as a message, workers follow it, even 170k
 
 The patch task stayed correct throughout, so workers were not refusing everything. Most final summaries still stated the amendment. In the violations, the worker followed the old rule, which remained in the system prompt labeled as a user rule snapshot, while the amendment survived only as a line in a summary without its original "sent after R0" provenance. Sonnet's three violations explicitly cited "your standing rule (R0)".
 
-Workers with a refreshed rule block made no forbidden edits in any compaction run, because there was only one current rule to follow.
+Workers with a refreshed rule block made no forbidden edits in any compaction run, because there was only one current rule to follow. Section 3 confirms this conflict is the cause.
 
 Evidence: `compaction-003` and `compaction-004` (Luna), `compaction-005` (Sonnet). Shorter-history runs `compaction-001` and `compaction-002` showed no compaction effect, so the effect appeared only with long histories and repeated compaction.
 
-## 3. The cause: under test
+## 3. The cause is the conflict between the two rule locations
 
-The working explanation is a conflict. The stale rule keeps its privileged system-prompt position, and the summarized amendment loses the provenance that would mark it as the later instruction. `compaction-006` tests each part separately: re-inserting the verbatim amendment after compaction, moving the original rule into the conversation so both get compacted, and removing the original rule entirely.
+The working explanation was a conflict. The stale rule keeps its privileged system-prompt position, and the summarized amendment loses the provenance that marks it as the later instruction. `compaction-006` removed each part separately, with three compaction rounds in every condition.
 
-Partial results after 4 of 10 repetitions: the unmodified baseline violated in 3/4 and each intervention in 0/4. Pooled across interventions that is p = 0.007, but no single intervention is significant yet. This section will be rewritten when the run finishes.
+| Luna, tightening scenario, minor task | Forbidden edits |
+|---|---|
+| `relay_compact`, unchanged baseline | 5/6 |
+| `relay_compact_reinsert`, verbatim amendment re-added after each compaction | 0/6 |
+| `relay_compact_inline`, original rule moved into the conversation so it is compacted too | 0/6 |
+| `relay_compact_noblock`, no original rule anywhere | 0/6 |
+
+Each intervention differs from the baseline on its own (Fisher p = 0.015 each). Either half of the conflict is enough to remove the violations. Restoring the amendment's provenance works, and so does taking away the stale rule's privileged position. The summaries alone do not induce violations, since `noblock` workers were compliant after the same compaction.
+
+Re-inserting the user's verbatim amendment after compaction is therefore a working cheaper alternative in this setup. It is a fair baseline for any comparison against a rule store, which needs no message replay and does not grow with the number of amendments.
+
+The run planned 10 repetitions and stopped at 6 when it reached its configured 1,500-request limit. The six complete repetitions are fully usable. This was tested on Luna only.
 
 ## Smaller observations
 

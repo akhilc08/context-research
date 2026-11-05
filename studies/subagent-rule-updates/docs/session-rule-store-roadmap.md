@@ -41,7 +41,7 @@ Build a concrete, well-designed implementation, not a throwaway prototype. Bound
 
 ## Status
 
-Steps 3 and 4 are underway in [this study](../README.md). Its [FINDINGS.md](../FINDINGS.md) holds the current results. In short, stale rules in continuing workers cause real violations, and relayed amendments lose to stale rules after repeated compaction, while a refreshed rule store avoided both in every run. The cause of the compaction effect is being tested.
+Steps 3 and 4 are underway in [this study](../README.md). Its [FINDINGS.md](../FINDINGS.md) holds the current results. In short, stale rules in continuing workers cause real violations, and relayed amendments lose to stale rules after repeated compaction, while a refreshed rule store avoided both in every run. A mechanism check traced the compaction effect to the conflict between the stale system-prompt rule and the summarized amendment.
 
 ## Still open
 

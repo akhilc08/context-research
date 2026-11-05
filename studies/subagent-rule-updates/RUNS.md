@@ -20,9 +20,9 @@ Several early runs exposed harness problems that were fixed before the next run.
 | `compaction-003` | tighten | Luna | 24 | $0.80 | Rolling compaction, about 166k tokens |
 | `compaction-004` | tighten | Luna | 40 | $1.43 | Ten-repetition relay replication |
 | `compaction-005` | tighten | Sonnet | 30 | $31.37 | Relay replication with prompt caching |
-| `compaction-006` | tighten | Luna | 80 | in progress | Mechanism checks |
+| `compaction-006` | tighten | Luna | 48 of 80 | $1.47 | Mechanism checks, stopped at the request limit |
 
-Total spent through `compaction-005`: about $38.31.
+Total spent through `compaction-006`: about $39.78.
 
 ## Entries
 
@@ -48,4 +48,4 @@ ompaction-004` (GPT-6 Luna, `configs/compaction-relay-replication.json`, `relay_
 
 ompaction-005` (Claude Sonnet 5, `configs/compaction-relay-sonnet.json`, 10 `relay_compact` and 5 `relay_no_compact` repetitions, 30 branches, about $31.37 with prompt caching, 90% of prompt tokens cached). The uncompacted relay was followed in 5/5. After three compaction rounds, Sonnet made the forbidden minor edit in 3/10 (Fisher p = 0.51 alone). Across both models' rolling-compaction runs, compacted relays led to violations in 10/23 branches versus 0/18 uncompacted (p = 0.002). The patch task stayed correct throughout. Unlike Luna, Sonnet kept the amendment prominent in every final summary, often labeled "Key policy (U1, still in effect)" or "Active policy". All three violations cited "your standing rule (R0)" from the system prompt. So the summary framing pattern seen in Luna does not explain these. The common factor is a conflict: after compaction, the amendment lives only in a summary inside the conversation, while the old rule still sits in the system prompt as a labeled user rule snapshot, and the worker sometimes resolves that conflict toward the old rule. Without compaction, the verbatim relay states that it was sent after R0, and workers followed it every time.
 
-`compaction-006` (GPT-6 Luna, `configs/compaction-mechanism.json`, 10 repetitions each of `relay_compact`, `relay_compact_reinsert`, `relay_compact_inline`, and `relay_compact_noblock`). In progress. Its artifacts are committed once the run finishes.
+`compaction-006` (GPT-6 Luna, `configs/compaction-mechanism.json`, 4 compacted conditions, about $1.47). The run planned 10 repetitions and stopped in repetition 6, when the next request would have exceeded the config's 1,500-request limit. That was a sizing error in the config, not a model or harness failure. Six repetitions finished (48 branches). The unchanged `relay_compact` baseline made the forbidden minor edit in 5/6. Re-inserting the verbatim amendment after each compaction, moving the original rule into the conversation, and removing the original rule each gave 0/6 (Fisher p = 0.015 each against the baseline). The patch task stayed correct in all 24 patch branches. The partial repetition 6 has only its preparation records and no scored branches.
