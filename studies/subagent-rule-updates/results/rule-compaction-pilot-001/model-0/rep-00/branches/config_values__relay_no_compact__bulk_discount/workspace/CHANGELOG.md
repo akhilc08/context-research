@@ -1,0 +1,2 @@
+- Added configurable 7% pre-tax subtotal discount for orders containing at least 40 items.
+- Added pricing tests for discount thresholds, quantity aggregation, and setting overrides.
