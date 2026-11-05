@@ -98,7 +98,7 @@ def main() -> int:
         for name in ("resample.py", "rule_compaction.py", "scenarios.py", "worker.py", "provider.py"):
             shutil.copyfile(HERE / name, output / "source" / name)
         RC.save(output / "manifest.json", {
-            "started_utc": datetime.now(timezone.utc).isoformat(), "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            "started_utc": datetime.now(timezone.utc).isoformat(), "args": json.loads(json.dumps(vars(args), default=str)),
             "runs": [str(r) for r in args.runs],
             "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()})
         # Same generation settings as the rule-compaction runs.
