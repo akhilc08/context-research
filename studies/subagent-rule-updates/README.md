@@ -96,4 +96,4 @@ For a compaction run, call `run_compaction.analyze` on the model directory.
 
 Each model directory holds a frozen manifest and source snapshot, endpoint metadata, a budget ledger, warmup and preparation records, per-branch results with full worker requests, tool-event logs, and recomputed `summary.json` and `tables.md`. Analysis refuses to run if a stored score no longer matches the recorded actions.
 
-Raw request logs for the long compaction runs are hundreds of megabytes. They stay local and are excluded by `.gitignore`. The scored worker requests and every summarizer call are still committed inside the result and preparation records. Verified read-only filler workspaces are deleted after each step.
+Raw provider request logs (`requests.jsonl`) stay local for every run and are excluded by `.gitignore`. The long compaction runs produce hundreds of megabytes of them. The scored worker conversations, manager briefs, and every summarizer call are still committed inside the result and preparation records. Verified read-only filler workspaces are deleted after each step.
