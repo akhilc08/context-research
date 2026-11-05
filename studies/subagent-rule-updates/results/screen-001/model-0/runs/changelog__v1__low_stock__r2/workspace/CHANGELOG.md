@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to return alphabetically sorted names of items with quantities below 12 (INV-215).

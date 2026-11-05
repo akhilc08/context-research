@@ -1,0 +1,1 @@
+- INV-212: Apply a 7% pre-tax subtotal discount to orders containing 40 or more items, with threshold and tax-ordering tests.
