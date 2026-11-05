@@ -88,6 +88,23 @@ class CompactionTests(unittest.TestCase):
             if "/compact" in tag:
                 self.assertNotIn("[User rule snapshot", msgs[1]["content"])
 
+    def test_condition_subset_runs_only_selected_conditions(self):
+        config = {"repetitions": 1, "max_worker_calls": 6, "order_seed": 3, "scenario": "tighten", "filler_tasks": 6,
+                  "log_lines": 40, "compact_threshold_chars": 9000, "min_compactions": 2,
+                  "conditions": ["relay_compact", "relay_no_compact"]}
+        output = Path(tempfile.mkdtemp())
+        save(output / "manifest.json", {"config": config, "selected_model": {"id": "scripted"}, "planned_branches": 4})
+        execute(Scripted(), output, config)
+        summary = analyze(output)
+        self.assertEqual(summary["recorded_branches"], 4)
+        self.assertEqual({r["condition"] for r in summary["groups"]}, {"relay_no_compact", "relay_compact"})
+        self.assertEqual(sorted(p.name for p in (output / "rep-00/prep").iterdir()), ["relay_compact", "relay_no_compact"])
+
+    def test_unknown_condition_is_rejected(self):
+        from run_compaction import selected_conditions
+        with self.assertRaises(ValueError):
+            selected_conditions({"conditions": ["relay_compact", "typo"]})
+
     def test_too_few_compactions_invalidates_setup(self):
         with self.assertRaises(RuntimeError):
             self.run_study(Scripted(), fillers=2, threshold=10**9)
