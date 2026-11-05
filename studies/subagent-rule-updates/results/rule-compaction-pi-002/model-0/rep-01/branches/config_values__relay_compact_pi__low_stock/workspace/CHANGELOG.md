@@ -1,0 +1,1 @@
+- Add low_stock inventory query to return alphabetized names below the configured threshold.

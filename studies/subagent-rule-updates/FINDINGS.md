@@ -97,7 +97,18 @@ The manager also restated the full current rules with every later task, so in th
 - Every final summary still stated the new version of the changed rule. The worker kept the rule's text and fell back to its default anyway.
 - The unchanged rule stayed on its first version in every branch, and the changelog rule survived compaction completely.
 
-So compaction weakened one of two rules without deleting it. The uncompacted history grew to about 480k characters and was followed every time, so length alone does not explain the failures. This is Luna only, with one summarizer prompt.
+So compaction weakened one of two rules without deleting it. The uncompacted history grew to about 480k characters and was followed every time, so length alone does not explain the failures. This is Luna only.
+
+### With pi's compaction
+
+`rule-compaction-pi-001` and `rule-compaction-pi-002` replaced the generic summarizer with a port of pi 1.5.0 compaction (`pi_compaction.py`). It uses pi's prompts copied from the binary, keeps the most recent ~20k tokens verbatim, and re-summarizes with pi's update prompt. Compaction ran after the same steps (8, 16, 24). Everything else was unchanged.
+
+| Changed rule | Generic compaction | pi compaction |
+|---|---|---|
+| Changelog | 19/19 new version | 19/19 new version |
+| Config values | 13/20 new version, 7/20 neither | 16/20 new version, 4/20 neither |
+
+pi's summaries were longer (about 2,000 to 5,500 characters) and listed the amended config rule under `## Constraints & Preferences`. Failures still happened: 3 of 10 compacted sessions failed at least one task. That is not significant against no compaction on its own (0/10, Fisher p = 0.21), and it does not differ significantly from generic compaction (7/10, p = 0.18). Pooled over both compactors, 10 of 20 compacted config sessions failed against 0 of 10 without compaction (p = 0.011). A real harness's constraint-aware compaction may reduce the failure rate but did not remove it in these runs. The no-compaction control comes from `rule-compaction-001` and `002`, not from the same runs.
 
 ## Smaller observations
 
@@ -110,7 +121,8 @@ So compaction weakened one of two rules without deleting it. The uncompacted his
 - One small fixture repository, two screened rules, one amendment per session, read-only filler tasks.
 - Small samples: 3 to 20 runs per cell. Claims rest on large effects, not precise rates.
 - The second series is Luna only. The compaction effect in section 6 has not been checked on another model.
-- Compaction replaces the whole history with one summary written from a generic prompt. Real harnesses keep recent messages verbatim and use their own prompts.
+- Two compaction methods: a generic whole-history summary and a port of pi 1.5.0. Claude Code's and Codex's compaction are untested. Codex keeps earlier user messages verbatim up to 20k tokens, which would likely preserve a relayed change in this setup.
+- The rule store and re-insertion have not been tested on the second-series rules yet.
 - The correct rules were supplied directly. Automatic capture of rules from user messages is untested.
 - The relay in compaction runs was a fixed scripted message.
 - Each model played every role (manager, worker, summarizer) within its own run.

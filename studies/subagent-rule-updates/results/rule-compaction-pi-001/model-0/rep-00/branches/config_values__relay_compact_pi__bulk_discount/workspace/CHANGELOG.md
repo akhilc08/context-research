@@ -1,0 +1,1 @@
+- Added configurable 7% pre-tax bulk pricing discount for orders of 40 or more items, with pricing tests.
