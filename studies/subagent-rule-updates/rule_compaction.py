@@ -12,6 +12,7 @@ system-prompt rule block. No API calls without --live.
 
 python3 rule_compaction.py --live --output results/rule-compaction-001 [--repetitions 1]
 python3 rule_compaction.py --live --config configs/rule-compaction-pi.json --output results/rule-compaction-pi-001
+python3 rule_compaction.py --live --config configs/rule-compaction-store.json --output results/rule-compaction-store-001
 python3 rule_compaction.py --analyze results/rule-compaction-001/model-0
 """
 from __future__ import annotations
@@ -42,7 +43,13 @@ CHANGES = RULE_ORDER
 # condition -> compactor. "generic" compacts at the size threshold with compaction.py and replaces the
 # whole history. "pi" runs pi_compaction.py after the configured steps, the steps where generic
 # compaction happened in rule-compaction-001 and 002 (8, 16, 24).
-CONDITIONS = {"relay_no_compact": None, "relay_compact": "generic", "relay_compact_pi": "pi"}
+CONDITIONS = {"relay_no_compact": None, "relay_compact": "generic", "relay_compact_pi": "pi",
+              "store_compact": "generic", "reinsert_compact": "generic"}
+# store: the rules are never in the conversation. The harness puts the current rules in the system
+# prompt on every call and changes them at the step where the other conditions receive the relay.
+STORE_CONDITIONS = {"store_compact"}
+# reinsert: like relay_compact, plus the verbatim relayed amendment re-added after each compaction.
+REINSERT_CONDITIONS = {"reinsert_compact"}
 WARMUP = "Read README.md and report what it says. Do not change any files."
 INTERIM_TASK = "Read docs/architecture.md and report what it contains. Do not change any files."
 RELAY_BRIEFING = "The user has amended one of their rules since you started. Their amendment is relayed below."
@@ -62,6 +69,20 @@ def amendment(change: str) -> str:
 
 def inline_u0_message() -> str:
     return C.envelope("No task. Recording the user's project rules for this session.", relay=f"U0 | {U0_LABEL}\n{original_rules()}")
+
+
+def current_rules(change: str | None) -> str:
+    """The rules after `change` has moved to its second version. None means before any change."""
+    return "\n".join(f"{i}. {S.RULES[rule]['v2' if rule == change else 'v1']}" for i, rule in enumerate(RULE_ORDER, 1))
+
+
+def store_system(change: str | None) -> str:
+    return (f"{W.WORKER_SYSTEM}\n\n[Current project rules from the user, kept up to date by the harness]\n"
+            f"{current_rules(change)}\n[/Current project rules]")
+
+
+def reinsert_message(change: str) -> str:
+    return C.envelope(C.REINSERT_TASK, RELAY_BRIEFING, f"U1 | {U1_LABEL}\n{amendment(change)}")
 
 
 def relay_message(change: str) -> str:
@@ -84,9 +105,9 @@ def save(path: Path, value: Any) -> None:
 
 
 def read_only_step(client: Any, history: list[dict], stepdir: Path, message: str, tag: str, config: dict,
-                   extra: dict[str, str]) -> tuple[list[dict], dict]:
+                   extra: dict[str, str], system: str = W.WORKER_SYSTEM) -> tuple[list[dict], dict]:
     workspace = W.Workspace(stepdir / "workspace", {**S.FIXTURE, **extra}, stepdir / "tool_events.jsonl")
-    result = W.run_worker(client, W.WORKER_SYSTEM, history, workspace, message, tag=tag, max_calls=config["max_worker_calls"])
+    result = W.run_worker(client, system, history, workspace, message, tag=tag, max_calls=config["max_worker_calls"])
     mutations = [e for e in result["events"] if e["tool"] == "write_file"]
     step = {"status": result["status"], "error": result["error"], "mutations": mutations, "calls": len(result["responses"]),
             "history_chars": len(C.render_history(result["history"]))}
@@ -97,14 +118,17 @@ def read_only_step(client: Any, history: list[dict], stepdir: Path, message: str
 
 def prepare(client: Any, warm: list[dict], change: str, condition: str, prepdir: Path, tag: str, config: dict) -> tuple[list[dict], dict]:
     compactor = CONDITIONS[condition]
+    store = condition in STORE_CONDITIONS
+    system = store_system(change) if store else W.WORKER_SYSTEM
     pi_state = PI.PiState()
     count, lines, threshold = config["filler_tasks"], config["log_lines"], config["compact_threshold_chars"]
     extra = C.filler_files(count, lines)
     history = copy.deepcopy(warm)
-    record = {"condition": condition, "change": change, "compactor": compactor, "steps": [], "compactions": []}
-    messages = [relay_message(change)] + [C.envelope(t) for t in C.filler_tasks(count, lines)]
+    record = {"condition": condition, "change": change, "compactor": compactor, "system": system, "steps": [], "compactions": []}
+    first = C.envelope(INTERIM_TASK) if store else relay_message(change)
+    messages = [first] + [C.envelope(t) for t in C.filler_tasks(count, lines)]
     for index, text in enumerate(messages):
-        history, step = read_only_step(client, history, prepdir / f"step-{index:02d}", text, f"{tag}/step{index:02d}", config, extra)
+        history, step = read_only_step(client, history, prepdir / f"step-{index:02d}", text, f"{tag}/step{index:02d}", config, extra, system)
         record["steps"].append({"index": index, **step})
         if step["status"] != "finished" or step["mutations"]:
             record["setup_valid"] = False
@@ -120,6 +144,8 @@ def prepare(client: Any, warm: list[dict], change: str, condition: str, prepdir:
             continue
         event.update({"after_step": index, "markers": summary_markers(event.get("summary", ""), change)})
         record["compactions"].append(event)
+        if condition in REINSERT_CONDITIONS:
+            history = history + [{"role": "user", "content": reinsert_message(change)}]
     if compactor == "pi":
         record["setup_valid"] = [c["after_step"] for c in record["compactions"] if not c["skipped"]] == config["pi_compact_after_steps"]
     else:
@@ -137,24 +163,35 @@ def score(files: dict[str, str], task: str, change: str) -> dict:
             "unchanged_rule_outcome": details[unchanged]["outcome"], "details": details}
 
 
+def warmup(client: Any, history: list[dict], system: str, stepdir: Path, tag: str, config: dict) -> list[dict]:
+    warm, step = read_only_step(client, history, stepdir, WARMUP, tag, config, {}, system)
+    save(stepdir.with_suffix(".json"), {**step, "system": system, "history": warm})
+    if step["status"] != "finished" or step["mutations"]:
+        raise RuntimeError(f"Invalid warmup at {stepdir}")
+    return warm
+
+
 def execute(client: Any, output: Path, config: dict) -> None:
     for rep in range(config["repetitions"]):
         repdir = output / f"rep-{rep:02d}"
-        # Original rules first in the conversation, then the read-only warmup (compaction-006 inline order).
-        warm, step = read_only_step(client, [{"role": "user", "content": inline_u0_message()}], repdir / "warmup",
-                                    WARMUP, f"rep{rep}/warmup", config, {})
-        save(repdir / "warmup.json", {**step, "history": warm})
-        if step["status"] != "finished" or step["mutations"]:
-            raise RuntimeError(f"Invalid warmup in repetition {rep}")
+        warms = {}
+        if any(c not in STORE_CONDITIONS for c in config["conditions"]):
+            # Original rules first in the conversation, then the read-only warmup (compaction-006 inline order).
+            warms["relay"] = warmup(client, [{"role": "user", "content": inline_u0_message()}], W.WORKER_SYSTEM,
+                                    repdir / "warmup", f"rep{rep}/warmup", config)
+        if any(c in STORE_CONDITIONS for c in config["conditions"]):
+            # No rules in the conversation. The store supplies the original rules in the system prompt.
+            warms["store"] = warmup(client, [], store_system(None), repdir / "warmup-store", f"rep{rep}/warmup-store", config)
         prepared = {}
         for change in CHANGES:
             for condition in config["conditions"]:
                 key = f"{change}__{condition}"
+                warm = warms["store" if condition in STORE_CONDITIONS else "relay"]
                 history, record = prepare(client, warm, change, condition, repdir / "prep" / key, f"rep{rep}/prep/{key}", config)
                 save(repdir / "prep" / key / "record.json", record)
                 if not record["setup_valid"]:
                     raise RuntimeError(f"Invalid preparation for {key} in repetition {rep}")
-                prepared[key] = history
+                prepared[key] = (history, record["system"])
         branches = [(key, task) for key in prepared for task in S.TASKS]
         random.Random(config["order_seed"] + rep).shuffle(branches)
         save(repdir / "branch_order.json", branches)
@@ -162,10 +199,12 @@ def execute(client: Any, output: Path, config: dict) -> None:
             change, condition = key.split("__")
             branchdir = repdir / "branches" / f"{key}__{task}"
             workspace = W.Workspace(branchdir / "workspace", S.FIXTURE, branchdir / "tool_events.jsonl")
-            result = W.run_worker(client, W.WORKER_SYSTEM, prepared[key], workspace, task_message(task),
+            history, system = prepared[key]
+            result = W.run_worker(client, system, history, workspace, task_message(task),
                                   tag=f"rep{rep}/{key}/{task}", max_calls=config["max_worker_calls"])
             result.update({"rep": rep, "change": change, "condition": condition, "task": task, "execution_index": index,
-                           "start_history_chars": len(C.render_history(prepared[key])), "score": score(result["files"], task, change)})
+                           "system": system, "start_history_chars": len(C.render_history(history)),
+                           "score": score(result["files"], task, change)})
             save(branchdir / "result.json", result)
             s = result["score"]
             print(f"BRANCH {rep}:{key}__{task} status={result['status']} changed={s['changed_rule_outcome']} "
@@ -253,6 +292,7 @@ def main() -> int:
             "git_status": subprocess.check_output(["git", "status", "--short"], cwd=REPO, text=True),
             "worker_system": W.WORKER_SYSTEM, "summarizer_system": C.SUMMARIZER_SYSTEM,
             "inline_u0": inline_u0_message(), "relays": {c: relay_message(c) for c in CHANGES},
+            "store_systems": {str(c): store_system(c) for c in (None, *CHANGES)}, "reinserts": {c: reinsert_message(c) for c in CHANGES},
             "tasks": {t: task_message(t) for t in S.TASKS}})
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],

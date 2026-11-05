@@ -70,7 +70,7 @@ def load_key(repository_root: Path | None = None) -> str:
 def _transport(method: str, url: str, *, headers: dict, body: bytes | None):
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()

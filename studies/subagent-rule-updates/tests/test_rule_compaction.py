@@ -40,7 +40,7 @@ class Scripted:
             if self.drop:
                 kept = [k for k in kept if k not in (S.RULES["changelog"]["v2"], S.RULES["config_values"]["v2"])]
             return reply("Rules: " + " ".join(kept), self.n)
-        context = "\n".join(m.get("content") or "" for m in messages if m["role"] == "user")
+        context = "\n".join(m.get("content") or "" for m in messages if m["role"] in ("system", "user"))
         last = max(i for i, m in enumerate(messages) if m["role"] == "user")
         step = sum(m["role"] == "assistant" for m in messages[last + 1:])
         task = next((t for t, spec in S.TASKS.items() if spec["text"] in messages[last]["content"]), None)
@@ -111,6 +111,26 @@ class PiConditionTest(unittest.TestCase):
             self.assertTrue(record["final_history"][0]["content"].startswith(PI.P["COMPACTION_SUMMARY_PREFIX"]))
             summary = RC.analyze(out)
             self.assertEqual(summary["cells"]["changelog__relay_compact_pi"]["changed_outcomes"], {"v2": 2})
+
+
+class StoreAndReinsertTest(unittest.TestCase):
+    def test_store_and_reinsert_survive_a_summarizer_that_drops_the_amendment(self):
+        config = {**CONFIG, "compact_threshold_chars": 600, "conditions": ["store_compact", "reinsert_compact"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            RC.execute(Scripted(drop_amendment=True), out, config)
+            summary = RC.analyze(out)
+            for change in RC.CHANGES:
+                for condition in ("store_compact", "reinsert_compact"):
+                    cell = summary["cells"][f"{change}__{condition}"]
+                    self.assertEqual((cell["changed_outcomes"], cell["unchanged_v1"]), ({"v2": 2}, 2), (change, condition))
+            store = json.loads((out / "rep-00/prep/config_values__store_compact/record.json").read_text())
+            self.assertNotIn(S.RULES["config_values"]["v1"], json.dumps(store["final_history"]))
+            self.assertIn(S.RULES["config_values"]["v2"], store["system"])
+            warm = json.loads((out / "rep-00/warmup-store.json").read_text())
+            self.assertIn(S.RULES["config_values"]["v1"], warm["system"])
+            reinsert = json.loads((out / "rep-00/prep/changelog__reinsert_compact/record.json").read_text())
+            self.assertEqual(reinsert["final_history"][1]["content"], RC.reinsert_message("changelog"))
 
 
 if __name__ == "__main__":
