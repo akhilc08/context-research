@@ -1,0 +1,1 @@
+- Add `low_stock(items)` inventory query for alphabetized below-threshold items.

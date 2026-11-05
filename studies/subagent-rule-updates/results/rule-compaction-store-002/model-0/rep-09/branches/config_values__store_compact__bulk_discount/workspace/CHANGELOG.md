@@ -1,0 +1,1 @@
+- Added configurable bulk-order discount for orders meeting the item-count threshold, applied before tax, with pricing tests.

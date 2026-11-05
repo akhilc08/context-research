@@ -1,0 +1,1 @@
+- Added configurable low-stock inventory filtering with alphabetically sorted item names.

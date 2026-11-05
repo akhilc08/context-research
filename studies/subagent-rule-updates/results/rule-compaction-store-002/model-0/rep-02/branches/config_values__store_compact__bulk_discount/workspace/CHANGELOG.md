@@ -1,0 +1,1 @@
+- Added configurable bulk-order discounts of 7% for orders of at least 40 items, applied before tax, with pricing tests.

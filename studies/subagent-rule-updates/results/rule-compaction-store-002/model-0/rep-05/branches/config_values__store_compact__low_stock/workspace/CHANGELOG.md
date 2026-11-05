@@ -1,0 +1,1 @@
+- Added configurable low_stock inventory query returning below-threshold item names alphabetically.

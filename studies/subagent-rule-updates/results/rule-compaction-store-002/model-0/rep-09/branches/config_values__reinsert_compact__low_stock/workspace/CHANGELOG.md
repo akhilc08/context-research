@@ -1,0 +1,1 @@
+- Added low-stock inventory query with an environment-configurable threshold.

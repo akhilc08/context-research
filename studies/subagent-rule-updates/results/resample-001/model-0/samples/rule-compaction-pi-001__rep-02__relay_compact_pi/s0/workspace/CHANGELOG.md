@@ -1,0 +1,1 @@
+- INV-215: Add alphabetically sorted low-stock item names using a configurable threshold.

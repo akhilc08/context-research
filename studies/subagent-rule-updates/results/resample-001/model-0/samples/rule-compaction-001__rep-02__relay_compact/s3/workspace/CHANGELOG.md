@@ -1,0 +1,1 @@
+- Added low_stock inventory query for items below the configurable threshold.

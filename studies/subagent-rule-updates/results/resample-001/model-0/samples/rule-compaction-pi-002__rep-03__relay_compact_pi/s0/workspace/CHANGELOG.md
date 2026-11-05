@@ -1,0 +1,1 @@
+- Add low_stock inventory query for items below the configurable quantity threshold.

@@ -1,0 +1,1 @@
+- Added alphabetically sorted low-stock inventory lookup (INV-215).

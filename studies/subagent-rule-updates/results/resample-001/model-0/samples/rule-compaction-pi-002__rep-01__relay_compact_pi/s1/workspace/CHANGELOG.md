@@ -1,0 +1,1 @@
+- Add low_stock(items) to report alphabetized item names below the configured inventory threshold.

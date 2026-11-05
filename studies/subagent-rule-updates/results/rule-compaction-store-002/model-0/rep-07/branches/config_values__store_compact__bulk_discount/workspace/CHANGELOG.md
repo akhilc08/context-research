@@ -1,0 +1,1 @@
+- Added a configurable 7% bulk discount for orders meeting the configured item-count threshold, applied before tax.

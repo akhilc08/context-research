@@ -1,0 +1,1 @@
+- Added low_stock(items) to list inventory items below the configurable quantity threshold.

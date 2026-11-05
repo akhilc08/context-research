@@ -1,0 +1,1 @@
+- Added configurable low-stock item lookup to inventory.

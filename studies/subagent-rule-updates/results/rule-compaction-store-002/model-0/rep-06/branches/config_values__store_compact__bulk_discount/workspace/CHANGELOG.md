@@ -1,0 +1,1 @@
+- Added a configurable bulk discount of 7% for orders with at least 40 items, applied before tax.

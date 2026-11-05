@@ -1,0 +1,1 @@
+- Added `low_stock(items)` inventory query, with an environment-configurable threshold.

@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to list alphabetically sorted names of items below the configurable stock threshold.

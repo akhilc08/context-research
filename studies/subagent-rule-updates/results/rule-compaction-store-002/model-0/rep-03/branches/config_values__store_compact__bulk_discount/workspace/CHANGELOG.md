@@ -1,0 +1,1 @@
+- Added a configurable 7% pre-tax discount to orders containing at least 40 items, and covered bulk pricing behavior with tests.

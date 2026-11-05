@@ -1,0 +1,1 @@
+- Added inventory.low_stock(items) to return below-threshold item names alphabetically.

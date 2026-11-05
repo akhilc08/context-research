@@ -1,0 +1,1 @@
+- Added `low_stock(items)` inventory query to return alphabetized names below the configurable threshold (default 12).

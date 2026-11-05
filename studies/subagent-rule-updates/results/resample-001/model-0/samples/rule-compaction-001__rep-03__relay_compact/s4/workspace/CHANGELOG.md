@@ -1,0 +1,1 @@
+- Added low_stock(items) inventory query for alphabetically sorted items below quantity 12.

@@ -1,0 +1,1 @@
+- Added the `low_stock(items)` inventory query with alphabetically sorted results.

@@ -1,0 +1,1 @@
+- Added inventory low-stock query for items with quantity below 12, sorted by name.

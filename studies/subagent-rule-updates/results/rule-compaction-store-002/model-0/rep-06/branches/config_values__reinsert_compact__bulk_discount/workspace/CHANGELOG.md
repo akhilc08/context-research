@@ -1,0 +1,1 @@
+- INV-212: Apply a settings-configurable 7% subtotal discount before tax when an order reaches 40 items, with tests for aggregate quantities and overrides.

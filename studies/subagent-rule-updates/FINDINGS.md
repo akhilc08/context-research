@@ -110,6 +110,37 @@ So compaction weakened one of two rules without deleting it. The uncompacted his
 
 pi's summaries were longer (about 2,000 to 5,500 characters) and listed the amended config rule under `## Constraints & Preferences`. Failures still happened: 3 of 10 compacted sessions failed at least one task. That is not significant against no compaction on its own (0/10, Fisher p = 0.21), and it does not differ significantly from generic compaction (7/10, p = 0.18). Pooled over both compactors, 10 of 20 compacted config sessions failed against 0 of 10 without compaction (p = 0.011). A real harness's constraint-aware compaction may reduce the failure rate but did not remove it in these runs. The no-compaction control comes from `rule-compaction-001` and `002`, not from the same runs.
 
+## 7. Keeping the rules outside the summary removes the failures
+
+`rule-compaction-store-002` added two conditions to the generic-compaction protocol of section 6. Everything else was unchanged.
+
+- `store_compact`: the rules never enter the conversation. The harness puts the current rules in the system prompt on every call and switches the changed rule at the step where the other conditions receive the relay.
+- `reinsert_compact`: as `relay_compact`, plus the verbatim relayed amendment re-added after each compaction.
+
+| Changed rule | Relay only (section 6) | Store | Re-insertion |
+|---|---|---|---|
+| Changelog | 19/19 new version | 20/20 | 20/20 |
+| Config values | 13/20 new version | 20/20 | 20/20 |
+
+Both differ from relay alone on the config rule (0/20 against 7/20, Fisher p = 0.008 by branch, p = 0.003 by session). They do not differ from each other with a single amendment. The relay-only comparison comes from the earlier runs with the same protocol and model.
+
+One re-insertion branch where the changelog rule changed hardcoded the low-stock threshold, breaking the unchanged config rule. Re-insertion repeats only the amendment, so the original rules still live only in the summary, while the store supplies every current rule. One failure in 20 is not evidence of a difference. In the relay-only runs the same unchanged rule held in all 20 branches.
+
+With one amendment, the two fixes cost about the same: the store's rule block is about 430 characters on every call, and the re-inserted message is about 630 characters after each compaction. Re-insertion grows with the number of amendments, including superseded ones, while the store holds one current version per rule. A test with several amendments and revocations is needed to separate them.
+
+## 8. Failures are mostly random on an ambiguous task, and some summaries make them likely
+
+`resample-001` reran the low-stock task 5 times from each saved compacted state of section 6, with the same model settings.
+
+| Compaction | Failures | Per-state failures out of 5 |
+|---|---|---|
+| Generic | 27/50 | 0, 1, 2, 2, 2, 3, 3, 4, 5, 5 |
+| pi | 14/50 | 0, 0, 0, 0, 0, 0, 2, 2, 5, 5 |
+
+After generic compaction, Luna hardcoded the low-stock threshold about half the time from almost every state, so single runs mostly sample a per-state probability. States differ somewhat (permutation test p = 0.02). After pi compaction, failures were concentrated: six states never failed and two always failed (p < 0.001).
+
+The two pi states that always failed both summarized the rule as "For tunable values, use `app.settings.get(NAME, default)`…" and dropped the instruction not to hardcode. Every pi state that never failed kept "do not hardcode" or an imperative "Read each with `app.settings.get`". Under generic compaction, states whose summary dropped "hardcode" failed more often on average (3.2 of 5 against 2.2), with overlap. This pattern was found after the fact in 20 summaries, so it is a hypothesis. Editing only the rule's wording in a fixed summary would test it.
+
 ## Smaller observations
 
 - With a manager brief, the assisted manager relayed the amendment in every branch, and workers almost always followed it.
@@ -122,7 +153,6 @@ pi's summaries were longer (about 2,000 to 5,500 characters) and listed the amen
 - Small samples: 3 to 20 runs per cell. Claims rest on large effects, not precise rates.
 - The second series is Luna only. The compaction effect in section 6 has not been checked on another model.
 - Two compaction methods: a generic whole-history summary and a port of pi 1.5.0. Claude Code's and Codex's compaction are untested. Codex keeps earlier user messages verbatim up to 20k tokens, which would likely preserve a relayed change in this setup.
-- The rule store and re-insertion have not been tested on the second-series rules yet.
 - The correct rules were supplied directly. Automatic capture of rules from user messages is untested.
 - The relay in compaction runs was a fixed scripted message.
 - Each model played every role (manager, worker, summarizer) within its own run.

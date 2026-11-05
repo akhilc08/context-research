@@ -1,0 +1,1 @@
+- Added configurable low-stock inventory query returning alphabetized item names.

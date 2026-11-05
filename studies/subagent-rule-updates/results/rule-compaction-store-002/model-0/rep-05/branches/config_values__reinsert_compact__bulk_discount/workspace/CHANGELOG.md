@@ -1,0 +1,1 @@
+- Added a 7% pre-tax discount for orders with at least 40 items, with threshold, discount, and tax rates configurable through environment-backed settings.
