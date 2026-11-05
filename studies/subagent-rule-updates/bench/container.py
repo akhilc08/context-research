@@ -5,10 +5,12 @@ The Runner protocol keeps docker out of the unit tests.
 """
 from __future__ import annotations
 
+import codecs
 import copy
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,20 +19,82 @@ from bench.rules import Changes
 
 MAX_FILE_BYTES = 65536
 TIMEOUT_EXIT = 124
+CHANGES_CAP = 1 << 20
+LISTING_CAP = 4 << 20
+KILL_GRACE = 5
+HOST_SLACK = 15
+
+
+class _Tail:
+    """Keeps only the last `cap` characters of a stream."""
+
+    def __init__(self, cap: int):
+        self.cap = max(cap, 1)
+        self.text = ""
+
+    def add(self, chunk: str) -> None:
+        self.text += chunk
+        if len(self.text) > 2 * self.cap:
+            self.text = self.text[-self.cap:]
+
+    def value(self) -> str:
+        return self.text[-self.cap:]
+
+
+def _drain(stream: Any, tail: _Tail) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while True:
+        chunk = stream.read1(65536) if hasattr(stream, "read1") else stream.read(65536)
+        if not chunk:
+            break
+        tail.add(decoder.decode(chunk))
+    tail.add(decoder.decode(b"", final=True))
 
 
 class DockerRunner:
-    """Runs docker through subprocess. A timeout returns exit code 124."""
+    """Runs docker through subprocess. A timeout returns exit code 124.
 
-    def run(self, args: List[str], *, input: Optional[str] = None, timeout: int) -> Tuple[int, str, str]:
+    Output is read incrementally and only the last `max_output` characters of each
+    stream are kept (per-call argument, else the runner default). Line endings are
+    not translated.
+    """
+
+    def __init__(self, max_output: int = 10000):
+        self.max_output = max_output
+
+    def run(self, args: List[str], *, input: Optional[str] = None, timeout: int,
+            max_output: Optional[int] = None) -> Tuple[int, str, str]:
+        cap = max_output or self.max_output
+        out, err = _Tail(cap), _Tail(cap)
+        proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def feed() -> None:
+            try:
+                if input is not None:
+                    proc.stdin.write(input.encode("utf-8"))
+            except OSError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        threads = [threading.Thread(target=t, daemon=True) for t in
+                   (feed, lambda: _drain(proc.stdout, out), lambda: _drain(proc.stderr, err))]
+        for t in threads:
+            t.start()
         try:
-            proc = subprocess.run(args, input=input, capture_output=True, text=True,
-                                  errors="replace", timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            def _text(v):
-                return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
-            return TIMEOUT_EXIT, _text(exc.stdout), _text(exc.stderr)
-        return proc.returncode, proc.stdout, proc.stderr
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            code = TIMEOUT_EXIT
+        for t in threads:
+            t.join(5)
+        for stream in (proc.stdout, proc.stderr):
+            stream.close()
+        return code, out.value(), err.value()
 
 
 def _tool(name: str, description: str, fields: dict) -> dict:
@@ -79,14 +143,16 @@ class ContainerWorkspace:
         self.container_id = None
 
     def _exec(self, cmd: List[str], *, input: Optional[str] = None, timeout: Optional[int] = None,
-              interactive: bool = False, cwd: Optional[str] = None) -> Tuple[int, str, str]:
+              interactive: bool = False, cwd: Optional[str] = None,
+              max_output: Optional[int] = None) -> Tuple[int, str, str]:
         args = ["docker", "exec"]
         if interactive:
             args.append("-i")
         if cwd:
             args += ["-w", cwd]
         args.append(str(self.container_id))
-        return self.runner.run(args + cmd, input=input, timeout=timeout or self.command_timeout)
+        return self.runner.run(args + cmd, input=input, timeout=timeout or self.command_timeout,
+                               max_output=max_output)
 
     def _rel(self, name: str) -> str:
         rel = PurePosixPath(name)
@@ -124,7 +190,7 @@ class ContainerWorkspace:
                     if len(args["content"].encode()) > MAX_FILE_BYTES:
                         raise ValueError("File exceeds 64 KiB limit")
                     absolute = self._resolve(rel)
-                    code, before, _ = self._exec(["cat", absolute])
+                    code, before, _ = self._exec(["cat", absolute], max_output=CHANGES_CAP)
                     event["before"] = before if code == 0 else None
                     code, _, err = self._exec(["sh", "-c", _WRITE_SCRIPT, "sh", absolute],
                                               input=args["content"], interactive=True)
@@ -143,7 +209,7 @@ class ContainerWorkspace:
         return result
 
     def _read(self, absolute: str) -> dict:
-        code, out, _ = self._exec(["cat", absolute])
+        code, out, _ = self._exec(["cat", absolute], max_output=MAX_FILE_BYTES + 1)
         if code != 0:
             raise ValueError("No such file")
         if len(out.encode()) > MAX_FILE_BYTES:
@@ -153,32 +219,38 @@ class ContainerWorkspace:
         return {"content": out}
 
     def _run_command(self, command: str) -> dict:
-        code, out, err = self._exec(["bash", "-lc", command], cwd=self.workdir)
+        wrapped = ["timeout", "-k", str(KILL_GRACE), str(self.command_timeout), "bash", "-lc", command]
+        code, out, err = self._exec(wrapped, cwd=self.workdir, timeout=self.command_timeout + HOST_SLACK,
+                                    max_output=self.max_output_chars + 1)
+        timed_out = code == TIMEOUT_EXIT
+        if timed_out:
+            # Backstop: kill everything except pid 1 in case the process outlived the timeout.
+            self._exec(["sh", "-c", "kill -9 -1"], timeout=30, max_output=1000)
         text = out + err
         truncated = len(text) > self.max_output_chars
         if truncated:
             text = text[-self.max_output_chars:]
-        return {"exit_code": code, "output": text, "timed_out": code == TIMEOUT_EXIT, "truncated": truncated}
+        return {"exit_code": code, "output": text, "timed_out": timed_out, "truncated": truncated}
 
-    def _git(self, *args: str) -> Tuple[int, str, str]:
-        return self._exec(["git", "-C", self.workdir] + list(args))
+    def _git(self, *args: str, cap: int = CHANGES_CAP) -> Tuple[int, str, str]:
+        return self._exec(["git", "-C", self.workdir] + list(args), max_output=cap)
 
     def changes(self, base_commit: str, *, exclude: frozenset = frozenset()) -> Changes:
         """Files changed against base_commit, including untracked ones: path -> (base, final)."""
         if self.container_id is None:
             raise RuntimeError("Container not started")
-        code, out, err = self._git("diff", "--no-renames", "--name-status", base_commit)
+        code, out, err = self._git("diff", "--no-renames", "--name-status", "-z", base_commit, cap=LISTING_CAP)
         if code != 0:
             raise RuntimeError("git diff failed: " + err.strip())
         entries: Dict[str, str] = {}
-        for line in out.splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2 and parts[0]:
-                entries[parts[1]] = parts[0][0]
-        code, out, err = self._git("ls-files", "--others", "--exclude-standard")
+        tokens = out.split("\0")
+        for i in range(0, len(tokens) - 1, 2):
+            if tokens[i] and tokens[i + 1]:
+                entries[tokens[i + 1]] = tokens[i][0]
+        code, out, err = self._git("ls-files", "--others", "--exclude-standard", "-z", cap=LISTING_CAP)
         if code != 0:
             raise RuntimeError("git ls-files failed: " + err.strip())
-        for line in out.splitlines():
+        for line in out.split("\0"):
             if line:
                 entries.setdefault(line, "U")
         result: Changes = {}
@@ -193,9 +265,11 @@ class ContainerWorkspace:
                 if code == 0:
                     base = text
             if status != "D":
-                code, text, _ = self._exec(["cat", self.workdir + "/" + path])
+                code, text, _ = self._exec(["cat", self.workdir + "/" + path], max_output=CHANGES_CAP)
                 if code == 0:
                     final = text
+            if any(t is not None and len(t) >= CHANGES_CAP for t in (base, final)):
+                continue
             if any(t is not None and ("\x00" in t or "�" in t) for t in (base, final)):
                 continue
             if base is None and final is None:
