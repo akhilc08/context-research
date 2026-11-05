@@ -31,7 +31,7 @@ Scoring checks files and tool events, not an LLM's interpretation of final answe
 From the repository root:
 
 ```sh
-python3 -m unittest discover -s experiments/subagent-rule-updates -p 'test_*.py' -v
+python3 -m unittest discover -s experiments/subagent-rule-updates/tests -t experiments/subagent-rule-updates
 ```
 
 Tests use scripted clients and temporary workspaces. They do not read API keys or call models. Provider tests mock the transport and credentials.

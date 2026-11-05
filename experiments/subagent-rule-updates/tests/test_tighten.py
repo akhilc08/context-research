@@ -8,7 +8,7 @@ from pathlib import Path
 import harness as H
 from analyze import analyze
 from run import execute_study, save
-from test_run import ScriptedClient
+from tests.test_run import ScriptedClient
 
 
 class TightenTests(unittest.TestCase):
