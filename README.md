@@ -34,7 +34,7 @@ Research on context management for long-running LLM coding agents, focused on co
 
 ## Experiments
 
-- [`experiments/subagent-rule-updates/`](experiments/subagent-rule-updates/): executable manager-worker rule-update study with offline tests, matched delivery conditions, and action-based scoring.
+- [`experiments/subagent-rule-updates/`](experiments/subagent-rule-updates/): manager-worker study of rule changes reaching running subagents and surviving compaction. Start with its [FINDINGS.md](experiments/subagent-rule-updates/FINDINGS.md).
 - [`experiments/position-dependent-retention/`](experiments/position-dependent-retention/): first single-backbone pilot for idea A.
 - [`experiments/recency-study/`](experiments/recency-study/): the larger runs behind the paper, plus the figure scripts.
 - [`experiments/benchmark-dryrun/`](experiments/benchmark-dryrun/): τ-bench gold-action replay used to check the benchmark harness.

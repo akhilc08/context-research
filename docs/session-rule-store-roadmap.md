@@ -39,8 +39,12 @@ Build a concrete, well-designed implementation, not a throwaway prototype. Bound
 4. **Validate, then run the main study.** Check the implementation and grading before freezing the method and evaluating on held-out tasks. Measure adherence, permitted-task success, rule-state errors, context overhead, calls, and latency. Use a controlled executable sandbox with a smaller coding-task validation.
 5. **Explain and publish the findings.** Establish what works, why it works, where it fails, and what it costs. Run targeted follow-ups needed to support those claims. Release the implementation, tasks, results, and paper.
 
+## Status
+
+Steps 3 and 4 are underway in [`experiments/subagent-rule-updates/`](../experiments/subagent-rule-updates/). Its [FINDINGS.md](../experiments/subagent-rule-updates/FINDINGS.md) holds the current results. In short, stale rules in continuing workers cause real violations, and relayed amendments lose to stale rules after repeated compaction, while a refreshed rule store avoided both in every run. The cause of the compaction effect is being tested.
+
 ## Still open
 
-The exact rule representation, update mechanism, harness, models, tasks, grading, sample sizes, and budget remain to be specified. The novel contribution is not yet established.
+Automatic rule capture, an unassisted manager, more scenarios, and larger samples remain. The novel contribution is not yet established.
 
 The endpoint is a reproducible study of instruction inheritance and updates across persistent subagents, including their interaction with compaction. Building a store and reporting one score is not enough. General swarm coordination, arbitrary task-context sharing, and production integration are outside this scope.
