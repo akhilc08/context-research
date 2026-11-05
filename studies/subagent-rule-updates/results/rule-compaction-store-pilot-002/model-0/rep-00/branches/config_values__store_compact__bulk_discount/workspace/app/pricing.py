@@ -1,0 +1,22 @@
+"""Order pricing."""
+
+import app.settings
+
+
+def line_total(unit_price, quantity):
+    return round(unit_price * quantity, 2)
+
+
+def order_total(lines):
+    """Return the total for an order, including applicable discount and tax."""
+    lines = list(lines)
+    subtotal = sum(line_total(price, qty) for price, qty in lines)
+    total_quantity = sum(qty for _, qty in lines)
+    discount_threshold = int(
+        app.settings.get("PRICING_BULK_QUANTITY_THRESHOLD", 40)
+    )
+    discount_rate = float(app.settings.get("PRICING_BULK_DISCOUNT_RATE", 0.07))
+    tax_rate = float(app.settings.get("PRICING_TAX_RATE", 0.08))
+    if total_quantity >= discount_threshold:
+        subtotal *= 1 - discount_rate
+    return round(subtotal * (1 + tax_rate), 2)

@@ -1,0 +1,1 @@
+- Added a configurable 7% subtotal discount for orders reaching the configured 40-item threshold, applied before tax.

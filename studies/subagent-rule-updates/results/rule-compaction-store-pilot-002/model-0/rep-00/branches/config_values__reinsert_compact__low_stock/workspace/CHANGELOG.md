@@ -1,0 +1,1 @@
+- Added configurable low-stock inventory query with alphabetical results (INV-215).
