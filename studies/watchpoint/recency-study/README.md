@@ -1,0 +1,11 @@
+# Recency study: code and raw results
+
+Three runs, in order, all against `qwen/qwen3-30b-a3b-instruct-2507` and (for the constraint task) `minimax/minimax-01` via OpenRouter, on 2026-09-23. Findings are written up in [`studies/watchpoint/paper/paper.pdf`](../paper/paper.pdf).
+
+1. **`run_study.py` → `results.json`** (868 trials). Position-dependent constraint retention (idea A: plain vs. grace-buffer tail width, 1 vs. 3 recursive rounds) and goal resurrection (idea F: plain vs. grace vs. anchor prompt). This is what the paper's first draft, "Recent Is Not Retained," was based on.
+2. **`run_study2.py` → `results2.json`** (828 trials). Adds two new arms on the same scenarios: Constraint Pinning (`pin`, actually implemented and measured here for the first time rather than cited from a different paper's setting) and a first, naive version of Watchpoint Compaction (`watch`) that asks the model to self-judge whether its compacted context still reflects a tracked fact. The self-judgment check turned out to be a poor detector (see the paper's Section 3.4, "Version 1").
+3. **`run_study3.py` → `results3.json`** (276 trials) plus **`run_pin3.py` → `results_pin3.json`** (108 trials, filling in Constraint Pinning at 3 recursive rounds, which `run_study2.py` skipped). The fixed, extraction-based version of Watchpoint Compaction: instead of a yes/no self-judgment, the model restates what it currently believes in one sentence, and that restatement is checked against the tracked value with a deterministic keyword match. This is the version reported as working in the paper.
+
+Supporting files: `scenarios.py` (the scenario pool and per-scenario keywords), `check_scenarios.py` / `check_results.json` (the floor-check protocol), `lib.py` (shared transcript generator, recursive multi-round compaction, all grading and watchpoint logic — this file grew across all three runs, so it contains both the naive and extraction-based watchpoint implementations), `analyze.py` / `analyze2.py` (statistics), `plots.py` / `plots2.py` (figures; requires `matplotlib` — a virtualenv is recommended since this repo's system Python is externally managed).
+
+To reproduce from scratch: `OPENROUTER_API_KEY=... python3 run_study.py`, then `run_study2.py`, then `run_study3.py` and `run_pin3.py`, then the corresponding `analyze*.py` / `plots*.py` scripts.

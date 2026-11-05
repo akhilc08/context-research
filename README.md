@@ -1,46 +1,30 @@
 # context-research
 
-Research on context management for long-running LLM coding agents, focused on context compaction: what it loses and how to fix it.
+Research on context management for long-running LLM coding agents: what history compaction loses, and how to keep the instructions an agent must follow intact.
 
-## Layout
+## Studies
 
-| Folder | What it holds |
-|---|---|
-| [`docs/`](docs) | Research writing: briefs, the paper plan, idea write-ups, notes, and sources. |
-| [`paper/`](paper) | The paper's LaTeX source, compiled PDF, and figures. |
-| [`experiments/`](experiments) | Experiment code, input data, and results. Each study is a self-contained folder with its own README. |
+Each study is a self-contained folder under `studies/` with its own README, code, and results.
 
-## Research documents
+| Study | Status | Question |
+|---|---|---|
+| [`subagent-rule-updates`](studies/subagent-rule-updates/) | Active | Do a user's rule changes reach worker agents that are already running, and survive compaction? Start with its [findings](studies/subagent-rule-updates/FINDINGS.md). |
+| [`compaction-survey`](studies/compaction-survey/) | Archived | One night of studies (E1 to E27) on what compaction loses (rules, goals, plans, facts) and which cheap fixes restore it. |
+| [`watchpoint`](studies/watchpoint/) | Archived | The first thread: rule and goal loss under compaction, ending in a paper draft on Watchpoint Compaction. |
 
-- [`docs/session-rule-store-roadmap.md`](docs/session-rule-store-roadmap.md): current direction on instruction inheritance and updates across persistent subagents.
-- [`docs/subagent-rule-update-scenario.md`](docs/subagent-rule-update-scenario.md): the first controlled dependency-approval scenario and its evaluation protocol.
-- [`docs/compaction-study-brief.md`](docs/compaction-study-brief.md): main research brief with hypotheses, related work, and the study plan.
-- [`docs/paper-plan.md`](docs/paper-plan.md): concrete benchmark and method designs for each idea below, ranked and prioritized toward a first submission.
-- [`docs/lightweight-verify-repair-brief.md`](docs/lightweight-verify-repair-brief.md): offshoot brief on fingerprint-check-and-patch for silently dropped context.
-- [`docs/ideas/`](docs/ideas/): candidate research ideas, each a narrow compaction loss mechanism paired with a cheap fix.
-  - [`position-dependent-constraint-retention.md`](docs/ideas/position-dependent-constraint-retention.md)
-  - [`drift-detection-rollback.md`](docs/ideas/drift-detection-rollback.md)
-  - [`cheap-compaction-validation-stand-in.md`](docs/ideas/cheap-compaction-validation-stand-in.md)
-  - [`goal-resurrection-after-compaction.md`](docs/ideas/goal-resurrection-after-compaction.md)
-  - [`repair-vs-retention-compute-crossover.md`](docs/ideas/repair-vs-retention-compute-crossover.md)
-  - [`recursive-compaction-trigger-ratchet.md`](docs/ideas/recursive-compaction-trigger-ratchet.md)
-  - [`ratchet-vs-rescue-trigger-loss.md`](docs/ideas/ratchet-vs-rescue-trigger-loss.md)
-- [`docs/trace-notes.md`](docs/trace-notes.md): working notes on the TRACE paper that supports the main brief.
-- [`docs/SOURCES.md`](docs/SOURCES.md): annotated source ledger.
+The studies ran in reverse order of that table. The watchpoint work came first, the survey tested its ideas broadly, and the current study builds on the survey's operator-rule results.
 
-## Paper
+## Background
 
-[`paper/paper.pdf`](paper/paper.pdf): "Watchpoint Compaction," a general repair mechanism for two different compaction failure modes (a dropped rule, a resurrected stale goal), backed by roughly 2,200 real API trials. Includes a real negative result (a naive self-verification check that fails, and why) as part of its contribution, not just its narrative. Not yet reviewed or submitted anywhere; see its own Limitations section.
+Shared across studies, in [`docs/`](docs/):
 
-## Experiments
+- [`compaction-study-brief.md`](docs/compaction-study-brief.md): the original research brief, with hypotheses and related work.
+- [`SOURCES.md`](docs/SOURCES.md): annotated source ledger on context compaction.
+- [`trace-notes.md`](docs/trace-notes.md): working notes on the TRACE compression paper.
 
-- [`experiments/subagent-rule-updates/`](experiments/subagent-rule-updates/): manager-worker study of rule changes reaching running subagents and surviving compaction. Start with its [FINDINGS.md](experiments/subagent-rule-updates/FINDINGS.md).
-- [`experiments/position-dependent-retention/`](experiments/position-dependent-retention/): first single-backbone pilot for idea A.
-- [`experiments/recency-study/`](experiments/recency-study/): the larger runs behind the paper, plus the figure scripts.
-- [`experiments/benchmark-dryrun/`](experiments/benchmark-dryrun/): τ-bench gold-action replay used to check the benchmark harness.
-- [`experiments/overnight/`](experiments/overnight/): one unattended night of studies (E1 to E25, plus X1). Its README is the map and synthesis.
+## Running code
 
-Scripts that call a model need `OPENROUTER_API_KEY`. The overnight studies load it from a `.env` file at the repository root. The older pilots read it from the environment.
+Scripts that call a model need `OPENROUTER_API_KEY`. The current study and the survey read it from the environment or from a `.env` file at the repository root. The watchpoint pilots read only the environment. Each study's README describes its commands and offline checks.
 
 ## Working in this repository
 
