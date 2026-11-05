@@ -1,0 +1,3 @@
+- Implemented INV-212: apply a 7% subtotal discount to orders with at least 40 items before tax.
+- Read bulk-discount threshold, discount rate, and tax rate from environment-backed settings with defaults.
+- Implemented INV-215: added alphabetically sorted low-stock item names using a settings-backed threshold.

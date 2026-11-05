@@ -1,0 +1,34 @@
+import os
+import unittest
+from unittest.mock import patch
+
+from app.pricing import line_total, order_total
+
+
+class PricingTest(unittest.TestCase):
+    def test_line_total(self):
+        self.assertEqual(line_total(2.5, 4), 10.0)
+
+    def test_order_total_adds_tax(self):
+        self.assertEqual(order_total([(10.0, 1)]), 10.8)
+
+    def test_order_with_fewer_than_40_items_has_no_discount(self):
+        self.assertEqual(order_total([(1.0, 39)]), 42.12)
+
+    def test_order_with_40_items_discounted_before_tax(self):
+        self.assertEqual(order_total([(1.0, 40)]), 39.72)
+
+    def test_item_count_is_combined_across_lines(self):
+        self.assertEqual(order_total([(1.0, 20), (1.0, 20)]), 39.72)
+
+    def test_pricing_values_can_be_overridden_by_environment(self):
+        with patch.dict(os.environ, {
+            "BULK_DISCOUNT_ITEM_THRESHOLD": "2",
+            "BULK_DISCOUNT_RATE": "0.10",
+            "ORDER_TAX_RATE": "0.05",
+        }):
+            self.assertEqual(order_total([(10.0, 2)]), 18.9)
+
+
+if __name__ == "__main__":
+    unittest.main()
