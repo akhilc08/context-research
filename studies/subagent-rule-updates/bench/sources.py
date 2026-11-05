@@ -27,6 +27,12 @@ class TaskRow:
     patch: str
     test_patch: str
     license: str
+    workdir: str = ""
+
+
+def repo_workdir(repo: str) -> str:
+    """Repo checkout path in SWE-rebench V2 images (combine.Dockerfile.j2: /<repo name>)."""
+    return "/" + repo.split("/")[-1]
 
 
 _COLUMNS = [
@@ -66,6 +72,7 @@ def load_rows(parquet: Path, *, language: Optional[str] = "python") -> List[Task
             patch=r["patch"] or "",
             test_patch=r["test_patch"] or "",
             license=r["license"] or "",
+            workdir=repo_workdir(r["repo"]),
         ))
     return rows
 

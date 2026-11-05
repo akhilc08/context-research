@@ -58,6 +58,7 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(r.pass_to_pass, ("t2", "t3"))
         self.assertEqual(r.created_at, 1624400493)
         self.assertEqual(r.license, "MIT")
+        self.assertEqual(r.workdir, "/requests")
 
     def test_load_rows_all_languages(self):
         self.assertEqual(len(sources.load_rows(self._parquet(), language=None)), 2)
