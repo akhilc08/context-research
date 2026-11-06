@@ -30,7 +30,7 @@ class CasesTests(unittest.TestCase):
         self.rows = [_row("o__r-10", self.repo, 100), _row("o__r-20", self.repo, 200),
                      _row("o__r-30", self.repo, 300)]
         self.trajs = {self.repo: {}}
-        for n in (1, 2, 3, 5, 20, 40):
+        for n in (1, 2, 3, 5, 20, 30, 40):
             iid = "o__r-%d" % n
             p = self.tmp / (iid + ".traj.json")
             p.write_text(json.dumps({"messages": [
@@ -53,6 +53,22 @@ class CasesTests(unittest.TestCase):
             self.assertTrue(all(n < 30 for n in nums))
             self.assertNotIn("o__r-20", c.history)
             self.assertEqual(nums, sorted(nums))
+
+    def test_history_between_first_and_second_admitted(self):
+        self.rows = [_row("o__r-10", self.repo, 100), _row("o__r-30", self.repo, 300)]
+        out = self.build(history_chars=1)
+        self.assertEqual((out[0].first, out[0].second, out[0].history),
+                         ("o__r-10", "o__r-30", ("o__r-20",)))
+
+    def test_malformed_second_id_skips_repo(self):
+        self.rows = [_row("o__r-10", self.repo, 100), _row("bad-id", self.repo, 300)]
+        self.assertEqual(self.build(), [])
+
+    def test_save_is_atomic_and_leaves_no_tmp(self):
+        path = self.tmp / "sub" / "m.json"
+        cases.save_manifest(self.build(), path)
+        self.assertTrue(path.exists())
+        self.assertFalse(path.with_suffix(".json.tmp").exists())
 
     def test_newest_first_selection(self):
         out = self.build(history_chars=1)

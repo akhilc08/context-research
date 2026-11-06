@@ -76,7 +76,10 @@ def build_cases(rows: List[TaskRow], trajectories: Dict[str, Dict[str, Path]],
         tasks = by_repo[repo]
         if len(repo_rules) != 2 or len(tasks) < 2:
             continue
-        ordered = sorted(tasks, key=_task_key)
+        try:
+            ordered = sorted(tasks, key=_task_key)
+        except ValueError:
+            continue  # malformed instance id: skip the repository
         first, second = ordered[-2], ordered[-1]
         history = _pick_history(trajectories.get(repo, {}), {first.instance_id, second.instance_id},
                                 issue_number(second.instance_id), history_chars)
@@ -96,7 +99,11 @@ def save_manifest(cases: List[Case], path: Path) -> None:
         d = asdict(c)
         d["history"] = list(c.history)
         entries.append(d)
-    Path(path).write_text(json.dumps({"version": MANIFEST_VERSION, "cases": entries}, indent=2) + "\n")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps({"version": MANIFEST_VERSION, "cases": entries}, indent=2) + "\n")
+    temp.replace(path)
 
 
 def load_manifest(path: Path) -> List[Case]:
