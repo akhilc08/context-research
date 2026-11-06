@@ -291,8 +291,13 @@ class HistoryCompactionTests(unittest.TestCase):
             with self.subTest(case=case.case_id):
                 events = [e for e in self.events(case, self.config) if not e["skipped"]]
                 self.assertEqual({e["history"] for e in events}, {"manager", "worker-1"})
-                # The shipped thresholds fire on their own; forcing is only a backstop.
-                self.assertFalse([e for e in events if e["forced"]])
+                # The shipped thresholds fire on their own; forcing is only a backstop for a history
+                # that never reaches its threshold (setuptools' manager history is one short task).
+                for e in events:
+                    if e["forced"]:
+                        threshold = self.config["manager_compact_threshold_chars" if e["history"] == "manager"
+                                                 else "compact_threshold_chars"]
+                        self.assertLess(e["history_chars_before"], threshold)
 
     def test_both_histories_compact_with_pi(self):
         config = {**self.config, "compactor": "pi"}
