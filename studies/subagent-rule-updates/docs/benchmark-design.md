@@ -156,15 +156,29 @@ This section records what the build in `bench/` settled. It changes the design o
 
 ### Trajectories and history replay
 
-VibeMemBench trajectories use native tool calls: assistant messages carry `tool_calls` with a bash `command`, and tool messages carry the output. `bench/history.py` replays them as `run_command` calls with fresh call IDs, keeps only the first user message and the assistant and tool turns, truncates long outputs, and drops the final submit step. Replayed worker history is real agent work.
+VibeMemBench trajectories use native tool calls: assistant messages carry `tool_calls` with a bash `command`, and tool messages carry the output. `bench/history.py` replays them as `run_command` calls, keeps one user message plus the assistant and tool turns, truncates long outputs, and drops the final submit step. Replayed worker history is real agent work.
+
+Three edits keep the replay from contradicting the session:
+
+- **The first user message is the bare problem statement.** The trajectory's own first message also carries mini-swe-agent's instructions, such as "DO NOT MODIFY tests", "MODIFY source files in /testbed", and the submit protocol. Those instructions could conflict with a rule (a regression-test rule asks for a new test file) and would differ in strength between placements. So they are dropped.
+- **`/testbed` becomes the case's working directory.** Trajectories ran in `/testbed`, but the task containers check out the repository at `/<repo name>`. Commands, outputs, and assistant text are rewritten to match.
+- **Call IDs are sanitized.** Replayed tool-call IDs use only letters, digits, `_`, and `-`, and are at most 64 characters, so every provider accepts them.
 
 The manager side of each earlier task is generated, not taken from the trajectory. The manager receives the task's problem statement, delegates it with a `message_worker` call, gets the worker's reply, and answers "Done." These delegation turns never restate the rules. So a rule can only reach the worker through the first user message, the change, or the condition's delivery.
+
+### Compaction triggers
+
+The manager and worker histories have separate thresholds. The worker uses `compact_threshold_chars` (137,500 characters in `configs/bench-v1.json`). The manager uses `manager_compact_threshold_chars` (4,000). The manager's history is much shorter, because its side of each earlier task is only four messages. Its replayed part ranges from about 4,900 to 40,400 characters across the v1 cases, so with the worker's threshold the manager would never compact.
+
+After the last history block, each history the placement names that has not yet had a real compaction is compacted once anyway. That event records `forced: true`. With the pi port, a forced compaction can still skip, because pi keeps the recent tail and may find nothing older to summarize. In that case the generic summarizer runs instead and the event also records `forced_generic: true`. A content test replays every v1 case's real history under the shipped config. Both histories compact on their thresholds alone, so forcing is only a backstop there.
 
 ### Containers
 
 - The working directory is `/<repo name>`, the checkout path in SWE-rebench V2 images.
 - `run_command` uses an in-container `timeout`, because that is the only reliable way to kill the whole process tree. The host timeout is longer. A timed-out command returns exit code 124. `bench/validate.py` checks that each image has `timeout`.
 - Task 1 and task 2 each get their own container, started from that task's image and commit. The workspace does not carry over between them.
+- Containers run with `--network none` by default (`container_network` in the config). Validation uses the same setting.
+- Before the test patch is applied for scoring, every file it touches is reset to the base commit. Files that exist at base are checked out again, and files the patch creates are deleted. A worker that edited a test file therefore cannot block scoring. Validation's gold run skips this reset, so a gold patch that edits test files still shows up as a conflict.
 
 ### Cells and statuses
 
@@ -183,9 +197,28 @@ A run ends in one status:
 - `compaction_error`: the summarizer answered without a complete summary.
 - `infra_error`: a container or other setup failure.
 
-Unfinished records are never scored. Manager turns that end without finishing are recorded with a `manager_` status prefix. Analysis also flags a finished record as `setup_invalid` when its placement names a history that never had a non-skipped compaction. This happens, for example, when the pi port keeps the tail and skips compaction below its threshold. Such a cell would be a no-op compaction, so it is excluded from rates and counted separately.
+Unfinished records are never scored. Manager turns that end without finishing are recorded with a `manager_` status prefix. A worker's own status, such as `call_limit`, never sets the record's status directly. It goes back to the manager as the `message_worker` result, and only the manager's turn status reaches the record, through the `manager_` prefix.
+
+Analysis excludes two kinds of finished record from rates and counts each separately:
+
+- `setup_invalid`: the placement names a history that never had a non-skipped compaction. Forced compaction should make this rare, but the check stays.
+- `delegation_invalid`: the record's `u0_delegated`, `u2_delegated`, or `u2_worker_finished` flag is false or missing. These flags come from the worker deliveries. They catch a manager that answered a task itself and a worker whose last U2 delivery did not finish.
+
+The `no_change` control has no headline pass, since it never changes a rule. Analysis reports it in its own table instead: how many valid records kept both rules in their original version.
 
 There is no resume. A partial run needs a fresh output root, and `--resume` would have bypassed the spending cap. The runner refuses an existing model directory.
+
+### Live-run gates
+
+`run_bench.py --live` refuses to start unless these hold. Each check runs before any output directory or client exists.
+
+- **Validation.** It needs `--validation <validation.json>` from `bench/validate.py`, which keeps only cases whose two tasks are both valid, or `--allow-unvalidated`.
+- **Screening.** Every rule the plan uses must be marked `screened: true` in its rule file, or the run needs `--allow-unscreened`.
+- **Images.** `docker image inspect` must find every planned task image.
+
+The frozen manifest records the validation file, the dropped cases, both override flags, and any unscreened rules. During a run, `run_bench.py` and `screen_bench.py` both stop after three unfinished records in a row, of any status, and print status counts.
+
+`bench/validate.py` also marks a task invalid when the image lacks the base commit (`git cat-file -e`) or when `git check-ignore` reports any rule path for the repository as ignored. An ignored rule directory would hide the worker's new files from scoring.
 
 ### Screening
 
@@ -205,7 +238,7 @@ Three choices shaped the rules:
 
 ### Infrastructure state
 
-`bench/aws/user-data.sh` is the cloud-init script for the Ubuntu x86 host. It installs Docker, Python 3.12, and pyarrow, and creates `ssm-user` in the docker group. The AWS host is not launched yet, and no instance is recorded.
+`bench/aws/user-data.sh` is the cloud-init script for the Ubuntu x86 host. It installs Docker and Python 3.12, installs pyarrow with pip into the `/opt/bench-venv` virtualenv, and creates `ssm-user` in the docker group. The AWS host is not launched yet, and no instance is recorded.
 
 ### Open items
 
@@ -215,6 +248,8 @@ Three choices shaped the rules:
 - The SlopCodeBench track is not started, and its license is unchecked.
 
 ## What is left to the builder
+
+This list is historical. It records what the design left open before the build. "As built" above records how each item was settled.
 
 - How to group tasks into cases and order them.
 - How to splice VibeMemBench trajectories into worker histories, and how to build the manager's history.
