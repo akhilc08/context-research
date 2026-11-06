@@ -17,7 +17,7 @@ import random
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 STUDY = Path(__file__).resolve().parents[1]
 if str(STUDY) not in sys.path:
@@ -35,8 +35,9 @@ from relay import save  # noqa: E402
 from screen import MAX_DEFAULT_COMPLIANCE, MIN_TOLD_COMPLIANCE  # noqa: E402
 
 DEFAULT_REPETITIONS = 10
-# Provider and infrastructure failures leave a run unfinished; everything else was scored.
-UNFINISHED_STATUSES = ("provider_error", "infra_error")
+# Only a run whose worker finished is scored. Provider and infrastructure failures, call limits and
+# protocol errors leave it unfinished: excluded from rates and reported as counts by status.
+FINISHED_STATUS = "finished"
 # Which classify outcome counts as following the arm's wording.
 FOLLOW_OUTCOME = {"original": "old", "changed": "new"}
 
@@ -93,7 +94,7 @@ def run_one(client: Any, entry: dict, case: Any, rule: Any, row: Any, *, outdir:
                                  max_calls=config["max_worker_calls"])
             record.update({"status": result["status"], "error": result["error"], "calls": recorder.calls,
                            "worker_history": result["history"]})
-            if result["status"] != "provider_error":
+            if result["status"] == FINISHED_STATUS:
                 changes = ws.changes(row.base_commit, exclude=frozenset(test_patch_paths(row.test_patch)))
                 record.update(classify(rule, changes, issue=issue_number(row.instance_id)))
                 record["changed_paths"] = sorted(changes)
@@ -103,7 +104,7 @@ def run_one(client: Any, entry: dict, case: Any, rule: Any, row: Any, *, outdir:
         for key in ("outcome", "old", "new", "changed_paths"):
             record.pop(key, None)
         record.update({"status": "infra_error", "error": "%s: %s" % (type(exc).__name__, exc)})
-    if record["status"] in UNFINISHED_STATUSES:
+    if record["status"] != FINISHED_STATUS:
         for key in ("outcome", "old", "new", "changed_paths"):
             record.pop(key, None)
     return record
@@ -131,28 +132,29 @@ def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any
     return None
 
 
-def _split(records: List[dict]) -> Dict[str, Dict[str, List[dict]]]:
-    by_rule: Dict[str, Dict[str, List[dict]]] = {}
+def _split(records: List[dict], rule_ids: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, List[dict]]]:
+    by_rule: Dict[str, Dict[str, List[dict]]] = {rid: {a: [] for a in arms()} for rid in (rule_ids or ())}
     for r in records:
         by_rule.setdefault(r["rule_id"], {a: [] for a in arms()})[r["arm"]].append(r)
     return by_rule
 
 
 def _finished(runs: List[dict]) -> List[dict]:
-    return [r for r in runs if r.get("status") not in UNFINISHED_STATUSES and "outcome" in r]
+    return [r for r in runs if r.get("status") == FINISHED_STATUS and "outcome" in r]
 
 
 def _count(runs: List[dict], match: Any) -> int:
     return sum(1 for r in runs if match(r["outcome"]))
 
 
-def screen_verdicts(records: List[dict]) -> Dict[str, dict]:
+def screen_verdicts(records: List[dict], rule_ids: Optional[Iterable[str]] = None) -> Dict[str, dict]:
     """Rule id to {"passed", "none_match_rate", "original_follow_rate", "changed_follow_rate"}.
 
     Rates are over finished runs only; an arm with no finished runs has rate 0.0 and fails the rule.
+    rule_ids lists planned rules; one with no records is reported as not passed.
     Passing needs none_match_rate <= MAX_DEFAULT_COMPLIANCE and each follow rate >= MIN_TOLD_COMPLIANCE."""
     verdicts: Dict[str, dict] = {}
-    for rule_id, arm_runs in _split(records).items():
+    for rule_id, arm_runs in _split(records, rule_ids).items():
         done = {a: _finished(arm_runs[a]) for a in arms()}
         n = {a: len(done[a]) for a in done}
         matches = _count(done["none"], lambda o: o != "neither")
@@ -168,10 +170,10 @@ def screen_verdicts(records: List[dict]) -> Dict[str, dict]:
     return verdicts
 
 
-def run_counts(records: List[dict]) -> Dict[str, dict]:
+def run_counts(records: List[dict], rule_ids: Optional[Iterable[str]] = None) -> Dict[str, dict]:
     """Per rule and arm: finished runs and unfinished runs by status."""
     out: Dict[str, dict] = {}
-    for rule_id, arm_runs in _split(records).items():
+    for rule_id, arm_runs in _split(records, rule_ids).items():
         out[rule_id] = {}
         for a, runs in arm_runs.items():
             done = _finished(runs)
@@ -184,12 +186,12 @@ def run_counts(records: List[dict]) -> Dict[str, dict]:
     return out
 
 
-def analyze(output: Path) -> dict:
+def analyze(output: Path, rule_ids: Optional[Iterable[str]] = None) -> dict:
     """Write screening.json (verdicts, counts, per-run records) for every record.json under output."""
     output = Path(output)
     records = [json.loads(p.read_text()) for p in sorted(output.rglob("record.json"))]
-    counts = run_counts(records)
-    verdicts = {rid: {**v, "runs": counts[rid]} for rid, v in screen_verdicts(records).items()}
+    counts = run_counts(records, rule_ids)
+    verdicts = {rid: {**v, "runs": counts[rid]} for rid, v in screen_verdicts(records, rule_ids).items()}
     runs = [{k: v for k, v in r.items() if k not in ("worker_history", "calls", "worker_system")} for r in records]
     result = {"verdicts": verdicts, "runs": runs,
               "criteria": {"max_none_match_rate": MAX_DEFAULT_COMPLIANCE, "min_follow_rate": MIN_TOLD_COMPLIANCE}}
@@ -260,7 +262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                               workspace_factory=RB.live_workspace_factory())
         finally:
             save(model_dir / "provider_summary.json", client.summary())
-            analyze(model_dir)
+            analyze(model_dir, sorted({e["rule_id"] for e in plan}))
         print("SCREEN_COMPLETE output=%s error=%s" % (model_dir, failure), flush=True)
         return 1 if failure else 0
 

@@ -74,6 +74,44 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(SB.screen_verdicts(recs("r", "none", ["neither"]))["r"]["passed"])
 
 
+class FixRoundTests(unittest.TestCase):
+    def test_none_arm_call_limit_is_excluded_not_counted_as_neither(self):
+        # 3 of 10 finished none runs match (fails). Ten call_limit runs that wrote nothing must not dilute that.
+        records = make(3, 10, 10) + [{"rule_id": "r", "arm": "none", "status": "call_limit", "outcome": "neither"}
+                                     for _ in range(10)]
+        v = SB.screen_verdicts(records)["r"]
+        self.assertEqual(v["none_match_rate"], 0.3)
+        self.assertFalse(v["passed"])
+
+    def test_told_arm_model_protocol_error_excluded(self):
+        records = make(0, 10, 10) + [{"rule_id": "r", "arm": "changed", "status": "model_protocol_error",
+                                      "outcome": "neither"} for _ in range(5)]
+        v = SB.screen_verdicts(records)["r"]
+        self.assertEqual(v["changed_follow_rate"], 1.0)
+        self.assertTrue(v["passed"])
+
+    def test_status_breakdown_in_screening_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            records = make(0, 10, 10) + [{"rule_id": "r", "arm": "none", "status": s, "outcome": "neither"}
+                                         for s in ("call_limit", "call_limit", "model_protocol_error")]
+            for i, r in enumerate(records):
+                (out / ("x%d" % i)).mkdir()
+                (out / ("x%d" % i) / "record.json").write_text(json.dumps(r))
+            runs = SB.analyze(out)["verdicts"]["r"]["runs"]
+            self.assertEqual(runs["none"], {"finished": 10, "unfinished": {"call_limit": 2, "model_protocol_error": 1}})
+
+    def test_planned_rule_without_records_is_not_passed(self):
+        v = SB.screen_verdicts(make(0, 10, 10), rule_ids=["r", "missing"])
+        self.assertTrue(v["r"]["passed"])
+        self.assertEqual(v["missing"], {"passed": False, "none_match_rate": 0.0, "original_follow_rate": 0.0,
+                                        "changed_follow_rate": 0.0})
+        with tempfile.TemporaryDirectory() as d:
+            result = SB.analyze(Path(d), rule_ids=["missing"])
+            self.assertFalse(result["verdicts"]["missing"]["passed"])
+            self.assertEqual(result["verdicts"]["missing"]["runs"]["none"], {"finished": 0, "unfinished": {}})
+
+
 class PlanTests(unittest.TestCase):
     def test_dedupes_rules_per_repo_and_defaults_repetitions(self):
         plan = SB.build_plan({"order_seed": 1}, {c.case_id: c for c in CASES}, ["o__r--a", "o__r--b"])
