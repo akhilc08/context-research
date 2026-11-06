@@ -134,7 +134,7 @@ The build made no paid model calls. Two checks that need a real model move to th
 - **Screening.** Every rule must be screened on the model being evaluated before its results count. Until then, rules are marked unscreened, and some may be dropped.
 - **End-to-end model runs.** The build instead tests the harness offline with scripted agents, like the study's existing `tests/` package. These prove the containers, tools, compaction, conditions, and checkers fit together, not how a real model behaves.
 
-The build's only cost is AWS: pulling task containers and confirming each task's tests pass with its reference fix and fail without it. That validation has not run yet, because the AWS host is not launched.
+The build's only cost is AWS: pulling task containers and confirming each task's tests pass with its reference fix and fail without it. That validation is done (see [Validation](#validation)).
 
 ## Infrastructure
 
@@ -144,7 +144,7 @@ When the full evaluation is run later, almost all of its cost will be model call
 
 ## Growth plan
 
-1. **Feasibility.** Check licenses. Set up an AWS x86 instance with Docker. Confirm a few SWE-rebench V2 tasks build and their tests behave as expected. Licenses are checked for SWE-rebench V2 and VibeMemBench. The AWS part is not done.
+1. **Feasibility.** Check licenses. Set up an AWS x86 instance with Docker. Confirm a few SWE-rebench V2 tasks build and their tests behave as expected. Licenses are checked for SWE-rebench V2 and VibeMemBench. The AWS host is set up and every v1 task is validated (see [Validation](#validation)).
 2. **First version.** About 10 repositories with two rules each, every condition and placement defined, and the harness passing offline tests. This is built (see below), with the open items listed there.
 3. **More repositories.**
 4. **Harder changes.** Several amendments in one session, revocations, and changes that arrive while a worker is mid-task. The study's store and re-insertion results already say a multi-amendment test is needed to separate those two methods.
@@ -170,14 +170,14 @@ The manager side of each earlier task is generated, not taken from the trajector
 
 The manager and worker histories have separate thresholds. The worker uses `compact_threshold_chars` (137,500 characters in `configs/bench-v1.json`). The manager uses `manager_compact_threshold_chars` (4,000). The manager's history is much shorter, because its side of each earlier task is only four messages. Its replayed part ranges from about 4,900 to 40,400 characters across the v1 cases, so with the worker's threshold the manager would never compact.
 
-After the last history block, each history the placement names that has not yet had a real compaction is compacted once anyway. That event records `forced: true`. With the pi port, a forced compaction can still skip, because pi keeps the recent tail and may find nothing older to summarize. In that case the generic summarizer runs instead and the event also records `forced_generic: true`. A content test replays every v1 case's real history under the shipped config. Both histories compact on their thresholds alone, so forcing is only a backstop there.
+After the last history block, each history the placement names that has not yet had a real compaction is compacted once anyway. That event records `forced: true`. With the pi port, a forced compaction can still skip, because pi keeps the recent tail and may find nothing older to summarize. In that case the generic summarizer runs instead and the event also records `forced_generic: true`. A content test replays every v1 case's real history under the shipped config. Both histories compact on their thresholds alone in every case but one. Setuptools' manager history is a single short task (about 2,900 characters), so its one manager compaction is forced. Lowering the manager threshold to cover it would roughly double the manager compactions in most other cases.
 
 ### Containers
 
 - The working directory is `/<repo name>`, the checkout path in SWE-rebench V2 images.
 - `run_command` uses an in-container `timeout`, because that is the only reliable way to kill the whole process tree. The host timeout is longer. A timed-out command returns exit code 124. `bench/validate.py` checks that each image has `timeout`.
 - Task 1 and task 2 each get their own container, started from that task's image and commit. The workspace does not carry over between them.
-- Containers run with `--network none` by default (`container_network` in the config). Validation uses the same setting.
+- The agent works with no network: containers start with `--network none` (`container_network` in the config). Just before the hidden tests run, the scorer moves the container to `scoring_network` (`bridge` in `configs/bench-v1.json`). Some tasks' tests need the network, for example aiohttp's proxy tests and setuptools' editable installs. The agent still cannot download packages or fetch the upstream fix. Validation uses the same two settings. Leaving `scoring_network` unset keeps the container on `container_network` throughout.
 - Before the test patch is applied for scoring, every file it touches is reset to the base commit. Files that exist at base are checked out again, and files the patch creates are deleted. A worker that edited a test file therefore cannot block scoring. Validation's gold run skips this reset, so a gold patch that edits test files still shows up as a conflict.
 
 ### Cells and statuses
@@ -220,13 +220,37 @@ The frozen manifest records the validation file, the dropped cases, both overrid
 
 `bench/validate.py` also marks a task invalid when the image lacks the base commit (`git cat-file -e`) or when `git check-ignore` reports any rule path for the repository as ignored. An ignored rule directory would hide the worker's new files from scoring.
 
+### Validation
+
+`bench/validate.py --gold-runs 3` passes all 20 v1 tasks under the shipped config, so all 20 cases are usable. Each task's new tests fail at base, and the reference fix makes all its tests pass in three fresh containers in a row. The summary is `bench/manifests/validation-v1.json`, and live runs take it as `--validation`.
+
+The case pairs changed twice on the way there:
+
+| Validation file | Network | Valid | What it found |
+|---|---|---|---|
+| `validation-v1-network-none.json` | none, even for the tests | 16 of 20 | aiohttp, dbt-redshift, and setuptools tests need the network |
+| `validation-v1-network-bridge.json` | on throughout | 19 of 20 | `pypa__setuptools-4985`'s reference fix fails its own tests |
+| `validation-v1-scoring-network.json` | only while scoring | 19 of 20 | `pypa__setuptools-4980` is flaky |
+
+setuptools-4980 passed once with the network on throughout. It then failed three runs in a row, each time on a different set of editable-install tests, which download packages. Repeating the gold run (`--gold-runs`) was added to catch this kind of task. With 4980 and 4985 both excluded, setuptools uses tasks 4870 and 4911. The two earlier files are the source of the `--exclude-invalid` flags in the manifest command above.
+
 ### Screening
 
 Screening uses one worker on each case's first task, with three arms: no rule, original wording, and changed wording. Only `finished` runs count. Runs that end on `call_limit` or `model_protocol_error` are treated as unfinished in every arm and reported as a status mix, because truncated no-rule runs would bias the no-rule arm toward passing.
 
 ### v1 content
 
-Ten repositories, two rules each, which gives 20 rules and 20 cases: `aio-libs/aiohttp`, `dbt-labs/dbt-redshift`, `Delgan/loguru`, `HypothesisWorks/hypothesis`, `pallets/click`, `PennyLaneAI/pennylane`, `pypa/setuptools`, `python-attrs/attrs`, `Qiskit/qiskit-terra`, and `stac-utils/pystac`. Each case carries a first task, a second task, and four earlier tasks as history, all from the same repository.
+Ten repositories, two rules each, which gives 20 rules and 20 cases: `aio-libs/aiohttp`, `dbt-labs/dbt-redshift`, `Delgan/loguru`, `HypothesisWorks/hypothesis`, `pallets/click`, `PennyLaneAI/pennylane`, `pypa/setuptools`, `python-attrs/attrs`, `Qiskit/qiskit-terra`, and `stac-utils/pystac`. Each case carries a first task, a second task, and earlier tasks as history, all from the same repository. History takes the newest earlier trajectories until they reach `history_chars` (150,000 characters), which is one to five trajectories per repository.
+
+The two tasks are the repository's latest two that pass validation. `bench/cases.py` rebuilds the manifest from the data, the rule files, and the config. It skips tasks that a validation summary marks invalid:
+
+```sh
+python3 bench/cases.py --data-root ~/bench-data --output bench/manifests/v1.json \
+    --exclude-invalid bench/manifests/validation-v1-network-bridge.json \
+    --exclude-invalid bench/manifests/validation-v1-scoring-network.json
+```
+
+That excludes setuptools tasks 4985 and 4980 (see [Validation](#validation)), so setuptools uses tasks 4870 and 4911. Its history is one earlier task.
 
 Rule names are `change-entry`, `change-note`, `change-summary`, `changes-entry`, and `news-entry` (a change record), and `behavior-note`, `upgrade-note`, and `regression-test` (a second kind of file). Rule files are in `bench/rules/` and the manifest is `bench/manifests/v1.json`.
 
@@ -234,17 +258,17 @@ Three choices shaped the rules:
 
 - **No issue number.** Rules omit the issue number because agents are never told it. The problem statements do not contain it. This keeps rules followable without changing how tasks are shown. The cost is that rules are less ticket-specific. A later option is for the harness to prefix "Issue #N:".
 - **One change type.** Every rule changes in the same way: from one file, either an existing file or a location that may not exist yet, to a new file per change in a new directory. The checker labels the final files by looking for an added line in the old file or a new file in the new directory.
-- **`repo_prior`.** Each rule records `repo_prior` as `old`, `new`, or `none`. It says whether the repository's own files pull an agent toward the old location, the new one, or neither. The change direction stays file to per-change directory for all rules. Recording the prior keeps v1 stable and lets analysis stratify by it. Without stratifying, the repository's pull confounds comparisons of delivery methods.
+- **`repo_prior`.** Each rule records `repo_prior` as `old`, `new`, or `none`. It says whether the repository's own files pull an agent toward the old location, the new one, or neither. The change direction stays file to per-change directory for all rules. Recording the prior keeps v1 stable and lets analysis stratify by it. Without stratifying, the repository's pull confounds comparisons of delivery methods. Each scored record stores both rules' `repo_prior`, and `tables.md` reports each cell's headline split by the changed rule's prior.
 
 ### Infrastructure state
 
-`bench/aws/user-data.sh` is the cloud-init script for the Ubuntu x86 host. It installs Docker and Python 3.12, installs pyarrow with pip into the `/opt/bench-venv` virtualenv, and creates `ssm-user` in the docker group. The AWS host is not launched yet, and no instance is recorded.
+`bench/aws/user-data.sh` is the cloud-init script for the Ubuntu x86 host. It installs Docker and Python 3.12, installs pyarrow with pip into the `/opt/bench-venv` virtualenv, and creates `ssm-user` in the docker group. The host is a c7i.4xlarge in us-east-1 with a 500 GB disk. It has no inbound ports and is reached only through SSM Session Manager. Code and data reach it through a private S3 bucket. It is stopped between uses.
 
 ### Open items
 
 - All 20 rules are unscreened. Some may be dropped at screening.
-- All tasks are unvalidated. The manifest may shrink after validation on AWS.
-- The live path has not run against real Docker or a real model. Offline tests use scripted clients and a fake container runner.
+- The live path has run against real Docker but not a real model. A smoke test on the click task checked file writes, path checks, command timeouts, change detection, and the network switch: the agent's request to PyPI fails, and the scorer's succeeds. Offline tests use scripted clients and a fake container runner.
+- One qiskit-terra history trajectory contains a submit command that failed in the original run. It is left as recorded.
 - The SlopCodeBench track is not started, and its license is unchecked.
 
 ## What is left to the builder

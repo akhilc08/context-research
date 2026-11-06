@@ -1,7 +1,8 @@
-"""Benchmark cases: two tasks from one repository plus earlier trajectories as history.
+r"""Benchmark cases: two tasks from one repository plus earlier trajectories as history.
 
 python3 bench/cases.py --data-root ~/bench-data --output bench/manifests/v1.json \
-    --exclude-invalid bench/manifests/validation-v1-network-bridge.json
+    --exclude-invalid bench/manifests/validation-v1-network-bridge.json \
+    --exclude-invalid bench/manifests/validation-v1-scoring-network.json
 """
 from __future__ import annotations
 

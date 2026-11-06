@@ -18,14 +18,14 @@ This experiment tests whether a user's rule changes reach worker agents that are
 | `bench/rules.py` | Rule specs and the file checker that labels a final workspace new, old, or neither |
 | `bench/container.py` | Docker workspace with `read_file`, `write_file`, and `run_command` inside a task container |
 | `bench/evaluate.py` | Scores the source benchmark's tests |
-| `bench/cases.py` | Case manifest loading |
+| `bench/cases.py` | Builds and loads the case manifest |
 | `bench/session.py` | One case under one cell: manager, persistent worker, rule change, compaction, second task |
 | `bench/run_bench.py` | Benchmark runner and analysis |
 | `bench/screen_bench.py` | Rule screening runner |
 | `bench/validate.py` | Checks each task in its container before any worker run |
 | `bench/aws/user-data.sh` | Cloud-init script for the x86 validation host |
 | `bench/rules/` | One JSON file of rules per repository |
-| `bench/manifests/` | Case manifests (`v1.json`) |
+| `bench/manifests/` | The case manifest (`v1.json`) and task validation summaries |
 | `docs/` | The original roadmap and the dependency-approval scenario specification |
 | `configs/` | One JSON file per run configuration |
 | `tests/` | Offline tests with scripted model clients |
@@ -76,7 +76,7 @@ Scoring reads tool events and final files, not model claims. Workers have `read_
 
 ## Benchmark
 
-The `bench/` package is a rule-change benchmark on real coding tasks. Tasks come from SWE-rebench V2 and VibeMemBench. The data is downloaded to `~/bench-data` and never committed. Outputs go under the gitignored `results/bench-*/` folders, because records hold problem statements and trajectories. The rules are unscreened until evaluation starts. The tasks are unvalidated until the AWS validation step runs `bench/validate.py` in their containers. The live path has not run against real Docker or a real model; offline tests use scripted clients and a fake container runner. See [docs/benchmark-design.md](docs/benchmark-design.md) for the design and what was built.
+The `bench/` package is a rule-change benchmark on real coding tasks. Tasks come from SWE-rebench V2 and VibeMemBench. The data is downloaded to `~/bench-data` and never committed. Outputs go under the gitignored `results/bench-*/` folders, because records hold problem statements and trajectories. The rules are unscreened until evaluation starts. All 20 v1 tasks pass validation in their containers (`bench/manifests/validation-v1.json`). The agent works with no network, and the container gets network only while the hidden tests run. The live path has run against real Docker but not yet a real model; offline tests use scripted clients and a fake container runner. See [docs/benchmark-design.md](docs/benchmark-design.md) for the design and what was built.
 
 ## Running
 
@@ -100,7 +100,7 @@ python3 studies/subagent-rule-updates/bench/screen_bench.py \
 
 Both accept `--cases`, `--model-index`, and `--config` (default `configs/bench-v1.json`). `run_bench.py` also accepts `--cells`.
 
-`run_bench.py --live` also needs `--validation <validation.json>` (from `bench/validate.py`) or `--allow-unvalidated`. It needs every rule it uses to be marked screened, or `--allow-unscreened`. It checks that every task image is present in Docker before starting.
+`run_bench.py --live` also needs `--validation <validation.json>` (from `bench/validate.py`, for example `bench/manifests/validation-v1.json`) or `--allow-unvalidated`. It needs every rule it uses to be marked screened, or `--allow-unscreened`. It checks that every task image is present in Docker before starting.
 
 Paid runs need `OPENROUTER_API_KEY` in the environment or in the repository-root `.env`. Pick a config and a new run ID:
 
