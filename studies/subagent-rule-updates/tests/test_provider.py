@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from provider import BudgetExceeded, OpenRouterClient, ProviderError, load_key
+from provider import BudgetExceeded, OpenRouterClient, ProviderError, RateLimited, load_key
 
 
 MODEL = "openai/gpt-6-luna"
@@ -103,6 +103,37 @@ class ProviderTests(unittest.TestCase):
             client.complete([{"role": "user", "content": "hi"}])
         summary = client.summary()
         self.assertEqual((summary["stopped"], summary["timeouts_retried"], len(fake.posts)), (True, 0, 1))
+
+    def test_rate_limited_request_is_retried_with_backoff_and_releases_reservation(self):
+        waits = []
+        client, fake = self.client(FakeTransport([(429, b"{}"), (429, b"{}"), success()]),
+                                   rate_limit_retries=2, sleep=waits.append)
+        client.complete([{"role": "user", "content": "x"}])
+        summary = client.summary()
+        self.assertEqual((len(fake.posts), summary["rate_limits_retried"], summary["requests"]), (3, 2, 3))
+        self.assertEqual(waits, [15.0, 30.0])
+        self.assertEqual(summary["reserved_cost_usd"], 0.0)
+        self.assertEqual(summary["timeouts_retried"], 0)
+
+    def test_rate_limits_are_not_retried_by_default_or_past_the_limit(self):
+        client, fake = self.client(FakeTransport([(429, b"{}"), success()]))
+        with self.assertRaises(RateLimited):
+            client.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(len(fake.posts), 1)
+        fake2 = FakeTransport([(429, b"{}"), (429, b"{}"), success()])
+        client2 = OpenRouterClient(self.root / "two", transport=fake2, rate_limit_retries=1, sleep=lambda s: None)
+        with self.assertRaises(RateLimited):
+            client2.complete([{"role": "user", "content": "x"}])
+        self.assertEqual(len(fake2.posts), 2)
+        with self.assertRaises(ProviderError):
+            client2.complete([{"role": "user", "content": "x"}])
+
+    def test_timeout_and_rate_limit_retries_are_counted_separately(self):
+        client, fake = self.client(FakeTransport([TimeoutError(), (429, b"{}"), success()]),
+                                   timeout_retries=1, rate_limit_retries=1, sleep=lambda s: None)
+        client.complete([{"role": "user", "content": "x"}])
+        summary = client.summary()
+        self.assertEqual((summary["timeouts_retried"], summary["rate_limits_retried"], len(fake.posts)), (1, 1, 3))
 
     def test_other_transport_failures_are_never_retried(self):
         client, fake = self.client(FakeTransport([ConnectionResetError(), success()]), timeout_retries=2)

@@ -7,7 +7,8 @@ are unauthenticated; POSTs carry authorization only in headers, never logs.
 Use a fresh output directory per client/run; an existing budget ledger is refused
 rather than silently resetting a cap. This synchronous client is single-owner,
 not a cross-process budget coordinator. All failed attempts stop the client; no
-HTTP retries are made. Hung requests are retried only when timeout_retries is set. Unknown billing retains the entire reservation.
+HTTP retries are made. Hung requests are retried only when timeout_retries is set, and HTTP 429
+responses (unbilled, common on free models) only when rate_limit_retries is set. Unknown billing retains the entire reservation.
 Prices/usage-derived costs are conservative estimates, not billing observations.
 """
 
@@ -31,6 +32,8 @@ REPOSITORY_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "AGEN
 SAFETY_MARGIN = Decimal("1.25")
 ANTHROPIC_CACHE_PROVIDERS = {"Anthropic", "Amazon Bedrock", "Google", "Azure", "Claude Platform on AWS"}
 TOKEN_ALLOWANCE = 4096
+RATE_LIMIT_BACKOFF = 15.0
+RATE_LIMIT_BACKOFF_MAX = 120.0
 
 
 class ProviderError(RuntimeError):
@@ -39,6 +42,10 @@ class ProviderError(RuntimeError):
 
 class TransportTimeout(ProviderError):
     """The request hung past the transport timeout. Billing is unknown."""
+
+
+class RateLimited(ProviderError):
+    """HTTP 429. OpenRouter does not bill it."""
 
 
 class BudgetExceeded(ProviderError):
@@ -116,7 +123,9 @@ class OpenRouterClient:
         *,
         reasoning_effort: str = "low",
         timeout_retries: int = 0,
+        rate_limit_retries: int = 0,
         transport: Callable | None = None,
+        sleep: Callable[[float], None] = time.sleep,
         prompt_cache: bool = True,
     ):
         self.prompt_cache = prompt_cache
@@ -124,6 +133,9 @@ class OpenRouterClient:
         # as committed spend, so the dollar cap holds even if the provider billed it.
         self.timeout_retries = _tokens(timeout_retries, "timeout_retries")
         self._timeouts_retried = 0
+        self.rate_limit_retries = _tokens(rate_limit_retries, "rate_limit_retries")
+        self._rate_limits_retried = 0
+        self._sleep = sleep
         self.output_dir = Path(output_dir)
         self.model = model
         self.provider_name = provider_name
@@ -298,6 +310,8 @@ class OpenRouterClient:
             raise TransportTimeout("Transport failed (" + failure + "); billing unknown")
         if failure:
             raise ProviderError("Transport failed (" + failure + "); no retry")
+        if status == 429:
+            raise RateLimited("HTTP 429 rate limited")
         if not isinstance(status, int) or not 200 <= status < 300:
             raise ProviderError("HTTP failure; no retry (billing unknown)")
         if not isinstance(parsed, dict):
@@ -326,11 +340,15 @@ class OpenRouterClient:
         # allowance covers message framing and provider-side tool formatting.
         prompt_price = max(v for k, v in self._prices.items() if k != "completion" and v is not None)
         reservation = ((len(body) + TOKEN_ALLOWANCE) * prompt_price + self.max_tokens * self._prices["completion"]) * SAFETY_MARGIN
-        for attempt in range(self.timeout_retries + 1):
+        timeouts = limited = 0
+        retried_timeout = False
+        while True:
+            attempt = timeouts + limited
             if self._requests >= self.max_calls or self._actual + self._estimated + self._reserved + reservation > self.budget:
                 raise BudgetExceeded("Request would exceed the dollar or request cap")
-            if attempt:
+            if retried_timeout:
                 self._timeouts_retried += 1
+                retried_timeout = False
             self._reserved += reservation
             self._requests += 1
             self._stopped = True  # Persist a pending/unknown attempt before sending.
@@ -339,10 +357,21 @@ class OpenRouterClient:
                 try:
                     response = self._fetch("POST", BASE_URL + "/chat/completions", body, f"{tag}/retry{attempt}" if attempt else tag)
                 except TransportTimeout:
-                    if attempt == self.timeout_retries:
+                    if timeouts == self.timeout_retries:
                         raise
                     # The hung attempt's reservation stays in _reserved for the rest of the run, and the
                     # client stays stopped unless the retry passes the caps and is sent.
+                    timeouts += 1
+                    retried_timeout = True
+                    continue
+                except RateLimited:
+                    if limited == self.rate_limit_retries:
+                        raise
+                    # A 429 is not billed, so its reservation is released before waiting.
+                    self._reserved -= reservation
+                    limited += 1
+                    self._rate_limits_retried += 1
+                    self._sleep(min(RATE_LIMIT_BACKOFF * 2 ** (limited - 1), RATE_LIMIT_BACKOFF_MAX))
                     continue
                 self._account(response, reservation)
                 if response.get("error"):
@@ -360,7 +389,6 @@ class OpenRouterClient:
                 return response
             finally:
                 self._save_budget()
-        raise AssertionError("unreachable")
 
     def _account(self, response: dict, reservation: Decimal):
         usage = response.get("usage")
@@ -427,6 +455,7 @@ class OpenRouterClient:
             "cache_write_usage_unknown_requests": self._cache_write_unknown + unaccounted,
             "latency_seconds": self._latency, "stopped": self._stopped,
             "timeout_retries": self.timeout_retries, "timeouts_retried": self._timeouts_retried,
+            "rate_limit_retries": self.rate_limit_retries, "rate_limits_retried": self._rate_limits_retried,
             "retry_policy": "only hung requests are retried, up to timeout_retries; every other failure aborts; unknown billing retains full reservation",
             "estimate_policy": "maximum fixed-provider prices; cache discounts only when reported; unknown writes use maximum input price",
         }
