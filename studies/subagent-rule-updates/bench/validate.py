@@ -42,6 +42,9 @@ def _base_run(row: TaskRow, runner: Any, workdir: str, result: dict) -> None:
         result["reasons"].append("test patch does not apply at base")
         return
     result["base_fail_to_pass"] = scored["fail_to_pass"]
+    if not scored["fail_to_pass"]:
+        result["reasons"].append("no FAIL_TO_PASS tests")
+        return
     result["base_fail_to_pass_failing"] = all(s != "PASSED" for s in scored["fail_to_pass"].values())
     if not result["base_fail_to_pass_failing"]:
         result["reasons"].append("a FAIL_TO_PASS test passes without the gold patch")

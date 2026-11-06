@@ -24,10 +24,12 @@ def make_row(iid="o__r-1"):
 class FakeRunner:
     """Gold applied in a container makes the tests pass; base_log is what an unpatched run prints."""
 
-    def __init__(self, base_log=FAIL_LOG, gold_log=PASS_LOG, gold_apply=0, has_timeout=True):
+    def __init__(self, base_log=FAIL_LOG, gold_log=PASS_LOG, gold_apply=0, has_timeout=True,
+                 test_conflict=()):
         self.calls, self.base_log, self.gold_log = [], base_log, gold_log
         self.gold_apply, self.has_timeout = gold_apply, has_timeout
         self.runs, self.removed, self.gold = 0, [], set()
+        self.test_conflict, self.applies = test_conflict, []
 
     def run(self, args, *, input=None, timeout, max_output=None):
         self.calls.append(list(args))
@@ -46,6 +48,11 @@ class FakeRunner:
         if "command -v timeout" in " ".join(args):
             return (0, "/usr/bin/timeout\n", "") if self.has_timeout else (1, "", "")
         if "apply" in args:
+            self.applies.append((cid, input))
+            if input == TEST_PATCH:
+                phase = "gold" if cid in self.gold else "base"
+                if phase in self.test_conflict:
+                    return 1, "", "error: patch failed"
             if input == GOLD:
                 if self.gold_apply:
                     return self.gold_apply, "", "error: patch failed"
@@ -102,6 +109,58 @@ class ValidateTaskTest(unittest.TestCase):
         res = validate.validate_task(make_row(), Boom(), "/r")
         self.assertFalse(res["valid"])
         self.assertIn("no such image", res["error"])
+
+
+class ValidateRisksTest(unittest.TestCase):
+    def test_gold_applied_before_test_patch(self):
+        runner = FakeRunner()
+        validate.validate_task(make_row(), runner, "/r")
+        gold_cid = next(c for c, i in runner.applies if i == GOLD)
+        order = [i for c, i in runner.applies if c == gold_cid]
+        self.assertEqual(order, [GOLD, TEST_PATCH])
+        base_cid = next(c for c, i in runner.applies if c != gold_cid)
+        self.assertEqual([i for c, i in runner.applies if c == base_cid], [TEST_PATCH])
+
+    def test_test_patch_conflict_at_base(self):
+        res = validate.validate_task(make_row(), FakeRunner(test_conflict=("base",)), "/r")
+        self.assertFalse(res["valid"])
+        self.assertFalse(res["base_fail_to_pass_failing"])
+        self.assertIn("test patch does not apply at base", res["reason"])
+
+    def test_test_patch_conflict_after_gold(self):
+        runner = FakeRunner(test_conflict=("gold",))
+        res = validate.validate_task(make_row(), runner, "/r")
+        self.assertFalse(res["valid"])
+        self.assertFalse(res["gold_resolved"])
+        self.assertTrue(res["base_fail_to_pass_failing"])
+        self.assertIn("on top of gold patch", res["reason"])
+        self.assertEqual(len(runner.removed), 2)
+
+    def test_missing_f2p_on_base_counts_as_failing(self):
+        res = validate.validate_task(make_row(), FakeRunner(base_log="PASSED tests/t.py::p2p\n"), "/r")
+        self.assertTrue(res["base_fail_to_pass_failing"])
+        self.assertTrue(res["valid"])
+        self.assertEqual(res["base_fail_to_pass"]["tests/t.py::f2p"], "MISSING")
+
+    def test_exception_mid_run_stops_container(self):
+        class Boom(FakeRunner):
+            def run(self, args, **kw):
+                if "bash" in args:
+                    raise OSError("disk gone")
+                return super().run(args, **kw)
+        runner = Boom()
+        res = validate.validate_task(make_row(), runner, "/r")
+        self.assertFalse(res["valid"])
+        self.assertIn("disk gone", res["error"])
+        self.assertEqual(runner.removed, ["cid1"])
+
+    def test_empty_fail_to_pass_is_invalid(self):
+        row = make_row()
+        row = TaskRow(**{**row.__dict__, "fail_to_pass": ()})
+        res = validate.validate_task(row, FakeRunner(), "/r")
+        self.assertFalse(res["base_fail_to_pass_failing"])
+        self.assertFalse(res["valid"])
+        self.assertIn("no FAIL_TO_PASS tests", res["reason"])
 
 
 class CliTest(unittest.TestCase):

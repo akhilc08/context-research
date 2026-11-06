@@ -13,9 +13,12 @@ python3.12 --version
 
 systemctl enable --now docker
 
-if id ubuntu >/dev/null 2>&1; then
-  usermod -aG docker ubuntu
-fi
+# SSM Session Manager sessions log in as ssm-user, which may not exist until first use.
+for account in ubuntu ssm-user; do
+  if id "$account" >/dev/null 2>&1; then
+    usermod -aG docker "$account"
+  fi
+done
 
 docker --version
 python3.12 -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
