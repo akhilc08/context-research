@@ -13,7 +13,9 @@ python3.12 --version
 
 systemctl enable --now docker
 
-# SSM Session Manager sessions log in as ssm-user, which may not exist until first use.
+# SSM Session Manager sessions log in as ssm-user. The agent only creates it at the first
+# session, so create it now; the agent reuses an existing ssm-user.
+id ssm-user >/dev/null 2>&1 || useradd -m -s /bin/bash ssm-user
 for account in ubuntu ssm-user; do
   if id "$account" >/dev/null 2>&1; then
     usermod -aG docker "$account"

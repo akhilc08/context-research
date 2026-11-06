@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bench import validate
 from bench.cases import Case, save_manifest
+from bench.evaluate import test_patch_paths
 from bench.sources import TaskRow
 
 PASS_LOG = "PASSED tests/t.py::f2p\nPASSED tests/t.py::p2p\n"
@@ -48,7 +49,10 @@ class FakeRunner:
         if "command -v timeout" in " ".join(args):
             return (0, "/usr/bin/timeout\n", "") if self.has_timeout else (1, "", "")
         if "apply" in args:
+            earlier = [i for c, i in self.applies if c == cid]
             self.applies.append((cid, input))
+            if any(test_patch_paths(e) & test_patch_paths(input) for e in earlier):
+                return 1, "", "error: patch failed"
             if input == TEST_PATCH:
                 phase = "gold" if cid in self.gold else "base"
                 if phase in self.test_conflict:
@@ -128,8 +132,10 @@ class ValidateRisksTest(unittest.TestCase):
         self.assertIn("test patch does not apply at base", res["reason"])
 
     def test_test_patch_conflict_after_gold(self):
-        runner = FakeRunner(test_conflict=("gold",))
-        res = validate.validate_task(make_row(), runner, "/r")
+        row = make_row()
+        row = TaskRow(**{**row.__dict__, "patch": TEST_PATCH})  # gold edits the test file too
+        runner = FakeRunner()
+        res = validate.validate_task(row, runner, "/r")
         self.assertFalse(res["valid"])
         self.assertFalse(res["gold_resolved"])
         self.assertTrue(res["base_fail_to_pass_failing"])
