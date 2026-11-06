@@ -44,7 +44,8 @@ CONFIG = {"max_manager_calls": 4, "max_worker_calls": 6, "compact_threshold_char
 class FakeRunner:
     """An in-memory container: one dict of files per started container, base content fixed."""
 
-    def __init__(self):
+    def __init__(self, fail_diff=False):
+        self.fail_diff = fail_diff
         self.base = {"app.py": "x = 1\n"}
         self.files = dict(self.base)
         self.started, self.removed = 0, 0
@@ -72,6 +73,8 @@ class FakeRunner:
             self.files[rel(cmd[-1])] = input
             return 0, "", ""
         if cmd[0] == "git" and "diff" in cmd:
+            if self.fail_diff:
+                return 128, "", "fatal: bad object"
             out = "".join("M\0%s\0" % p for p in sorted(self.files) if p in self.base and self.files[p] != self.base[p])
             return 0, out, ""
         if cmd[0] == "git" and "ls-files" in cmd:
@@ -86,11 +89,11 @@ class FakeRunner:
 
 
 class Factory:
-    def __init__(self):
-        self.runners = []
+    def __init__(self, **runner_kwargs):
+        self.runners, self.runner_kwargs = [], runner_kwargs
 
     def __call__(self, task_row, directory):
-        runner = FakeRunner()
+        runner = FakeRunner(**self.runner_kwargs)
         self.runners.append(runner)
         return ContainerWorkspace(task_row.image_name, runner, workdir=task_row.workdir)
 
@@ -109,8 +112,9 @@ class Scripted:
     """Manager forwards every user turn. Worker follows the latest rule wording found in its system prompt or
     user messages. Summarizer keeps every rule wording it sees. fail_at raises on that request number."""
 
-    def __init__(self, fail_at=None):
+    def __init__(self, fail_at=None, relay_u1=True, extra_write=None):
         self.n, self.requests, self.fail_at = 0, [], fail_at
+        self.relay_u1, self.extra_write = relay_u1, extra_write
 
     def complete(self, messages, *, tools=None, tag="", **kwargs):
         self.n += 1
@@ -126,13 +130,15 @@ class Scripted:
         step = sum(m["role"] == "assistant" for m in messages[last + 1:])
         text = messages[last]["content"]
         if system.startswith(SE.MANAGER_SYSTEM):
+            if not self.relay_u1 and text.startswith("A change to one of my rules"):
+                return reply("Noted.", self.n)
             return reply("Done.", self.n) if step else call("message_worker", {"message": text}, self.n)
         match = re.search(r"Fix bug (\d+)", text)
         if not match:
             return reply("Noted.", self.n)
         issue = match.group(1)
         seen = "\n".join([system] + [m.get("content") or "" for m in messages if m["role"] == "user"])
-        writes = []
+        writes = [self.extra_write] if self.extra_write and issue == "2" else []
         for rule in RULES.values():
             pos = {v: seen.rfind(getattr(rule, v)) for v in ("original", "changed")}
             version = max(pos, key=pos.get) if max(pos.values()) >= 0 else None
@@ -173,9 +179,9 @@ class SessionTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_cell(self, cell, client=None, config=None, case=CASE):
+    def run_cell(self, cell, client=None, config=None, case=CASE, factory=None):
         client = client or Scripted()
-        factory = Factory()
+        factory = factory or Factory()
         record = SE.run_cell(client, case, cell, rules=RULES, rows=ROWS, trajectories=self.trajectories,
                              outdir=self.root / "out" / SE.cell_id(cell), config=config or CONFIG, workspace_factory=factory)
         return record, client, factory
@@ -364,6 +370,103 @@ class SessionTest(unittest.TestCase):
         self.assertNotIn("rules", record)
         self.assertFalse(SE.headline_pass(record))
         self.assertEqual(len(factory.runners), 1)
+
+    def test_infra_error_saves_unscored_record(self):
+        factory = Factory(fail_diff=True)
+        cell = SE.Cell("relay", "none", "existing")
+        record, client, _ = self.run_cell(cell, factory=factory)
+        self.assertEqual(record["status"], "infra_error")
+        self.assertIn("RuntimeError: git diff failed", record["error"])
+        self.assertNotIn("rules", record)
+        self.assertNotIn("tests", record)
+        self.assertFalse(SE.headline_pass(record))
+        self.assertEqual(len(record["calls"]), len(client.requests))
+        saved = json.loads((self.root / "out" / SE.cell_id(cell) / "record.json").read_text())
+        self.assertEqual(saved["status"], "infra_error")
+        self.assertEqual([(r.started, r.removed) for r in factory.runners], [(1, 1), (1, 1)])
+
+    def test_malformed_summary_is_compaction_error(self):
+        class NoMessage(Scripted):
+            def complete(self, messages, **kwargs):
+                response = super().complete(messages, **kwargs)
+                if messages[0]["content"] == C.SUMMARIZER_SYSTEM:
+                    response["choices"][0]["message"] = None
+                return response
+
+        record, _, factory = self.run_cell(SE.Cell("relay", "manager", "existing"), client=NoMessage())
+        self.assertEqual(record["status"], "compaction_error")
+        self.assertIn("AttributeError", record["error"])
+        self.assertNotIn("rules", record)
+
+    def test_reinsert_stays_in_named_history(self):
+        u1 = SE.user_turns(CASE, RULES, ROWS)[1]
+
+        def u2_messages(client, who):
+            return next(r for r in client.requests if "/t2/%s" % who in r["tag"])["messages"]
+
+        def summaries(messages):
+            return [m for m in messages if (m.get("content") or "").startswith(C.SUMMARY_PREFIX)]
+
+        # The manager does not relay U1, so any U1 in the worker would come from the harness.
+        record, client, _ = self.run_cell(SE.Cell("reinsert", "manager", "existing"), client=Scripted(relay_u1=False))
+        self.assertEqual({e["history"] for e in record["compactions"]}, {"manager"})
+        worker = u2_messages(client, "worker-1")
+        self.assertNotIn(u1, json.dumps(worker))
+        self.assertFalse(summaries(worker))
+        self.assertTrue(summaries(u2_messages(client, "manager")))
+
+        record, client, _ = self.run_cell(SE.Cell("reinsert", "worker", "existing"), client=Scripted(relay_u1=False))
+        self.assertEqual({e["history"] for e in record["compactions"]}, {"worker-1"})
+        manager = u2_messages(client, "manager")
+        self.assertEqual(sum(m.get("content") == u1 for m in manager), 1)  # Only the user's own U1 turn.
+        self.assertFalse(summaries(manager))
+        worker = u2_messages(client, "worker-1")
+        self.assertTrue(summaries(worker))
+        self.assertIn({"role": "user", "content": u1}, worker)
+
+    def test_store_placement_leaves_other_history_uncompacted(self):
+        record, client, _ = self.run_cell(SE.Cell("store", "manager", "existing"))
+        self.assertTrue(record["compactions"])
+        self.assertEqual({e["history"] for e in record["compactions"]}, {"manager"})
+        self.assertFalse(any(r["tag"].split("/compact/")[-1].startswith("worker-1") for r in client.requests if "/compact/" in r["tag"]))
+        worker = next(r for r in client.requests if "/t2/worker-1" in r["tag"])["messages"]
+        self.assertFalse(any((m.get("content") or "").startswith(C.SUMMARY_PREFIX) for m in worker))
+
+    def test_pi_keeps_separate_state_per_history(self):
+        with mock.patch.object(PI, "KEEP_RECENT_TOKENS", 200):
+            record, client, _ = self.run_cell(SE.Cell("relay", "both", "existing"), config={**CONFIG, "compactor": "pi"})
+        self.assertEqual(record["status"], "finished")
+        by = {name: [e for e in record["compactions"] if e["history"] == name and not e["skipped"]]
+              for name in ("manager", "worker-1")}
+        self.assertTrue(all(len(v) >= 2 for v in by.values()), by)
+        for name, events in by.items():
+            other = [e["summary"] for e in by["manager" if name == "worker-1" else "worker-1"]]
+            first_prompt = events[0]["calls"][0]["messages"][1]["content"]
+            self.assertNotIn("<previous-summary>", first_prompt, name)
+            for prev, event in zip(events, events[1:]):
+                prompt = event["calls"][0]["messages"][1]["content"]
+                self.assertIn("<previous-summary>\n%s\n</previous-summary>" % prev["summary"], prompt, name)
+                for summary in other:
+                    self.assertNotIn(summary, prompt, name)
+
+    def test_test_patch_paths_excluded_from_rule_changes(self):
+        client = Scripted(extra_write=("tests/test_a.py", "def test_one(): pass  # NEW-TAG\n"))
+        seen = []
+        real = SE.classify
+
+        def spy(rule, changes, *, issue):
+            seen.append(dict(changes))
+            return real(rule, changes, issue=issue)
+
+        with mock.patch.object(SE, "classify", spy):
+            record, _, factory = self.run_cell(SE.Cell("relay", "none", "existing"), client=client)
+        self.assertEqual(record["status"], "finished")
+        self.assertIn("tests/test_a.py", factory.runners[1].files)  # The worker really wrote it.
+        self.assertEqual(len(seen), 2)
+        for changes in seen:
+            self.assertNotIn("tests/test_a.py", changes)
+            self.assertIn("news/2.txt", changes)
+        self.assertNotIn("tests/test_a.py", record["changed_paths"])
 
     def test_record_saved(self):
         record, _, _ = self.run_cell(SE.Cell("store", "none", "existing"))

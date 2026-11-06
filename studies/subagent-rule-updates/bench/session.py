@@ -10,7 +10,6 @@ tests. No provider calls happen on import; the client is injected.
 from __future__ import annotations
 
 import copy
-import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -179,7 +178,7 @@ def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.Pi
             raise ValueError("Unknown compactor: %r" % (compactor,))
     except ProviderError:
         raise
-    except (RuntimeError, KeyError, IndexError, TypeError) as exc:
+    except (RuntimeError, KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         raise CompactionError("%s compaction failed: %s: %s" % (name, type(exc).__name__, exc)) from exc
     reinserted = team.cell.condition == "reinsert" and not skipped and u1 is not None
     if reinserted:
@@ -290,13 +289,15 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
         status, record["error"] = "provider_error", str(exc)
     except CompactionError as exc:
         status, record["error"] = "compaction_error", str(exc)
+    except Exception as exc:  # Containers, git, trajectories: record it unscored and let the runner decide.
+        status, record["error"] = "infra_error", "%s: %s" % (type(exc).__name__, exc)
     if status != "finished":
         record.pop("rules", None)
         record.pop("tests", None)
     record.update({"status": status, "deliveries": team.deliveries, "calls": recorder.calls,
                    "manager_system_final": team.manager_system(), "worker_system_final": team.current_worker_system(),
                    "manager_history": team.manager_history, "worker_history": team.worker_history})
-    _save(outdir / "record.json", record)
+    R.save(outdir / "record.json", record)
     return record
 
 
@@ -306,9 +307,3 @@ def headline_pass(record: dict) -> bool:
         return False
     return rules["changed"]["outcome"] == "new" and rules["unchanged"]["outcome"] == "old"
 
-
-def _save(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-    temp.replace(path)
