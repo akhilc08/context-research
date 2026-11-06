@@ -26,9 +26,35 @@ class FakeRunner:
         self.calls.append({"args": list(args), "input": input, "max_output": max_output})
         if args[:2] == ["docker", "run"]:
             return 0, "cid\n", ""
+        if "ls-tree" in args:
+            return 0, "tests/test_a.py\0", ""
+        if "checkout" in args or "rm" in args:
+            return 0, "", ""
         if "apply" in args:
             return self.apply_code, "", "error: patch failed" if self.apply_code else ""
         return 0, self.log, ""
+
+    def find(self, word):
+        return [c for c in self.calls if word in c["args"]]
+
+
+class EditedTestsRunner(FakeRunner):
+    """The worker edited tests/test_a.py and created tests/new_test.py: the test patch applies only
+    after both are back at base."""
+
+    def __init__(self):
+        super().__init__()
+        self.dirty = {"tests/test_a.py", "tests/new_test.py"}
+
+    def run(self, args, *, input=None, timeout, max_output=None):
+        if "checkout" in args:
+            self.dirty -= set(args[args.index("--") + 1:])
+        elif "rm" in args:
+            self.dirty -= set(args[args.index("--") + 1:])
+        result = super().run(args, input=input, timeout=timeout, max_output=max_output)
+        if "apply" in args and self.dirty:
+            return 1, "", "error: tests/test_a.py: patch does not apply"
+        return result
 
 
 def row(f2p, p2p):
@@ -58,8 +84,8 @@ class EvaluateTest(unittest.TestCase):
         ok = score_tests(ws_for(r), row(["tests/test_a.py::test_one"], ["tests/test_b.py::test_five"]))
         self.assertTrue(ok["resolved"])
         self.assertFalse(ok["test_patch_conflict"])
-        self.assertEqual(r.calls[1]["input"], PATCH)
-        self.assertEqual(r.calls[2]["max_output"], 2000000)
+        self.assertEqual(r.find("apply")[0]["input"], PATCH)
+        self.assertEqual(r.find("-lc")[0]["max_output"], 2000000)
         bad = score_tests(ws_for(FakeRunner()), row(["tests/test_a.py::test_one"], ["tests/test_a.py::test_two"]))
         self.assertFalse(bad["resolved"])
         self.assertEqual(bad["pass_to_pass"], {"tests/test_a.py::test_two": "FAILED"})
@@ -71,7 +97,28 @@ class EvaluateTest(unittest.TestCase):
         res = score_tests(ws_for(r), row(["a"], []))
         self.assertTrue(res["test_patch_conflict"])
         self.assertFalse(res["resolved"])
-        self.assertEqual(len(r.calls), 2)
+        self.assertEqual(r.find("-lc"), [])
+        self.assertIn("patch failed", res["test_patch_apply_error"])
+
+    def test_worker_edited_test_files_are_reset_before_test_patch(self):
+        r = EditedTestsRunner()
+        res = score_tests(ws_for(r), row(["tests/test_a.py::test_one"], []))
+        self.assertFalse(res["test_patch_conflict"])
+        self.assertTrue(res["resolved"])
+        checkout = r.find("checkout")[0]["args"]
+        self.assertEqual(checkout[checkout.index("checkout") + 1:], ["abc", "--", "tests/test_a.py"])
+        removed = r.find("rm")[0]["args"]
+        self.assertEqual(removed[removed.index("--") + 1:], ["tests/new_test.py"])
+        self.assertEqual(res["test_patch_reset"], {"restored": ["tests/test_a.py"], "removed": ["tests/new_test.py"]})
+        order = [i for i, c in enumerate(r.calls) if {"checkout", "rm", "apply"} & set(c["args"])]
+        self.assertEqual([next(w for w in ("checkout", "rm", "apply") if w in r.calls[i]["args"]) for i in order],
+                         ["checkout", "rm", "apply"])
+
+    def test_reset_can_be_turned_off(self):
+        r = EditedTestsRunner()
+        res = score_tests(ws_for(r), row(["tests/test_a.py::test_one"], []), reset_test_files=False)
+        self.assertTrue(res["test_patch_conflict"])
+        self.assertEqual(r.find("checkout"), [])
 
     def test_patch_paths(self):
         self.assertEqual(test_patch_paths(PATCH), {"tests/test_a.py", "tests/new_test.py"})
