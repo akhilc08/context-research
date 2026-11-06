@@ -72,7 +72,7 @@ def load_rule_map(rules_dir: Path, repo: str) -> Dict[str, Any]:
 
 
 def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any], config: dict, *, rows: dict,
-            trajectories: dict, rules_dir: Path, workspace_factory: Any, resume: bool = False) -> Optional[str]:
+            trajectories: dict, rules_dir: Path, workspace_factory: Any) -> Optional[str]:
     """Run plan entries in order. Returns the stopping reason, or None when the plan completed.
 
     infra_error and compaction_error records are saved and the run continues. provider_error
@@ -81,16 +81,14 @@ def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any
     rule_cache: Dict[str, Any] = {}
     for entry in plan:
         outdir = record_dir(model_dir, entry)
-        if resume and (outdir / "record.json").exists():
-            continue
         case = cases[entry["case_id"]]
         if case.repo not in rule_cache:
             rule_cache[case.repo] = load_rule_map(rules_dir, case.repo)
-        before = client.summary()["accounted_cost_usd"]
+        before = client.summary()["budget_committed_usd"]
         record = SE.run_cell(client, case, BY_ID[entry["cell_id"]], rules=rule_cache[case.repo], rows=rows,
                              trajectories=trajectories, outdir=outdir, config=config, workspace_factory=workspace_factory)
         record["repetition"] = entry["repetition"]
-        record["cost_usd"] = client.summary()["accounted_cost_usd"] - before
+        record["cost_usd"] = client.summary()["budget_committed_usd"] - before
         save(outdir / "record.json", record)
         if record["status"] == "provider_error":
             return "provider_error in %s/%s rep%d: %s" % (entry["case_id"], entry["cell_id"], entry["repetition"],
@@ -125,17 +123,32 @@ def analyze(output: Path) -> dict:
         status = record.get("status")
         row["statuses"][status] = row["statuses"].get(status, 0) + 1
         row["cost_usd"] += float(record.get("cost_usd") or 0.0)
-        if setup_invalid(record):
+        try:
+            invalid = setup_invalid(record)
+            if not invalid and status == "finished" and record.get("rules"):
+                changed = record["rules"]["changed"]["outcome"]
+                unchanged = record["rules"]["unchanged"]["outcome"]
+                if changed not in OUTCOMES or unchanged not in OUTCOMES:
+                    raise KeyError("outcome")
+                passed = int(SE.headline_pass(record))
+                resolved = int(bool((record.get("tests") or {}).get("resolved")))
+        except (KeyError, TypeError, AttributeError):
+            row["statuses"][status] -= 1
+            row["statuses"]["malformed_record"] = row["statuses"].get("malformed_record", 0) + 1
+            if not row["statuses"][status]:
+                del row["statuses"][status]
+            continue
+        if invalid:
             row["setup_invalid"] += 1
             row["setup_invalid_records"].append(str(path.parent.relative_to(output)))
             continue
         if status != "finished" or not record.get("rules"):
             continue
         row["valid_finished"] += 1
-        row["changed"][record["rules"]["changed"]["outcome"]] += 1
-        row["unchanged"][record["rules"]["unchanged"]["outcome"]] += 1
-        row["headline_passes"] += int(SE.headline_pass(record))
-        row["tests_resolved"] += int(bool((record.get("tests") or {}).get("resolved")))
+        row["changed"][changed] += 1
+        row["unchanged"][unchanged] += 1
+        row["headline_passes"] += passed
+        row["tests_resolved"] += resolved
     summary = {"cells": cells, "totals": {"records": sum(c["records"] for c in cells.values()),
                                           "cost_usd": sum(c["cost_usd"] for c in cells.values()),
                                           "statuses": dict(sum((Counter(c["statuses"]) for c in cells.values()), Counter()))}}
@@ -190,7 +203,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--cases", help="Comma list of case ids")
     parser.add_argument("--model-index", type=int, default=0)
     parser.add_argument("--live", action="store_true", help="Authorize paid provider calls")
-    parser.add_argument("--resume", action="store_true", help="With --live: reuse the model directory, skip finished entries")
     args = parser.parse_args(argv)
     root = check_output_path(args.output)
     config = json.loads(args.config.read_text())
@@ -201,10 +213,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("PLAN_WRITTEN entries=%d path=%s (no model calls made)" % (len(plan), root / "plan.json"))
         return 0
     selected = config["models"][args.model_index]
-    if (root / ("model-%d" % args.model_index)).exists() and not args.resume:
-        raise SystemExit("Refusing existing output directory %s (use --resume to continue it)" %
-                         (root / ("model-%d" % args.model_index)))
+    model_dir = root / ("model-%d" % args.model_index)
+    if model_dir.exists():
+        raise SystemExit("Refusing existing output directory %s" % model_dir)
+    # Everything that can fail at setup runs before any directory, lock, or client exists.
     data_root = Path(config["data_root"]).expanduser()
+    for path in (data_root / PARQUET, data_root / HISTORY_DIR):
+        if not path.exists():
+            raise SystemExit("Missing data path: %s" % path)
+    rules_dir = STUDY / "bench/rules"
+    try:
+        for repo in sorted({cases[e["case_id"]].repo for e in plan}):
+            load_rule_map(rules_dir, repo)
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit("Cannot load rules: %s: %s" % (type(exc).__name__, exc))
     from bench.sources import load_rows, trajectory_index
     from provider import OpenRouterClient, load_key
     rows = {r.instance_id: r for r in load_rows(data_root / PARQUET)}
@@ -213,13 +235,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".run.lock").open("a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        model_dir = root / ("model-%d" % args.model_index)
-        if model_dir.exists() and not args.resume:
-            raise SystemExit("Refusing existing output directory %s (use --resume to continue it)" % model_dir)
-        model_dir.mkdir(exist_ok=True)
-        if not (model_dir / "manifest.json").exists():
+        if model_dir.exists():
+            raise SystemExit("Refusing existing output directory %s" % model_dir)
+        model_dir.mkdir()
+        try:
             freeze(model_dir, config, selected, args.config, plan)
-        save(model_dir / "plan.json", {"order_seed": config["order_seed"], "entries": plan})
+            save(model_dir / "plan.json", {"order_seed": config["order_seed"], "entries": plan})
+        except BaseException:
+            shutil.rmtree(model_dir, ignore_errors=True)
+            raise
         client = OpenRouterClient(model_dir, model=selected["id"], provider_name=selected["provider"],
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
                                   temperature=config["temperature"], max_tokens=config["max_output_tokens"],
@@ -227,8 +251,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         failure = None
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, trajectories=trajectories,
-                              rules_dir=STUDY / "bench/rules", workspace_factory=live_workspace_factory(),
-                              resume=args.resume)
+                              rules_dir=rules_dir, workspace_factory=live_workspace_factory())
         finally:
             save(model_dir / "provider_summary.json", client.summary())
             analyze(model_dir)

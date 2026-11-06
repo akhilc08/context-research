@@ -55,6 +55,47 @@ class RunnerTests(unittest.TestCase):
                 RB.main(write(tmp) + ["--output", str(tmp / "out"), "--live"])
             client.assert_not_called()
 
+    def test_missing_rules_file_fails_before_model_dir_or_client(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("provider.OpenRouterClient") as client:
+            tmp = Path(d)
+            data = tmp / "data"
+            (data / RB.PARQUET).parent.mkdir(parents=True)
+            (data / RB.PARQUET).write_text("")
+            (data / RB.HISTORY_DIR).mkdir(parents=True)
+            CONFIG["data_root"] = str(data)
+            args = write(tmp) + ["--output", str(tmp / "out"), "--live"]
+            with mock.patch.object(RB, "STUDY", tmp):
+                with self.assertRaises(SystemExit) as cm:
+                    RB.main(args)
+            self.assertIn("rules", str(cm.exception))
+            client.assert_not_called()
+            self.assertFalse((tmp / "out" / "model-0").exists())
+            CONFIG.pop("data_root")
+
+    def test_failed_freeze_removes_model_dir(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("provider.OpenRouterClient") as client, \
+                mock.patch("provider.load_key"), mock.patch("bench.sources.load_rows", return_value=[]), \
+                mock.patch("bench.sources.trajectory_index", return_value={}), \
+                mock.patch.object(RB, "load_rule_map", return_value={}), \
+                mock.patch.object(RB, "freeze", side_effect=RuntimeError("boom")):
+            tmp = Path(d)
+            data = tmp / "data"
+            (data / RB.PARQUET).parent.mkdir(parents=True)
+            (data / RB.PARQUET).write_text("")
+            (data / RB.HISTORY_DIR).mkdir(parents=True)
+            CONFIG["data_root"] = str(data)
+            args = write(tmp) + ["--output", str(tmp / "out"), "--live"]
+            with self.assertRaises(RuntimeError):
+                RB.main(args)
+            CONFIG.pop("data_root")
+            client.assert_not_called()
+            self.assertFalse((tmp / "out" / "model-0").exists())
+
+    def test_resume_flag_removed(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit):
+                RB.main(write(Path(d)) + ["--output", str(Path(d) / "o"), "--resume"])
+
     def test_unknown_cell_or_case_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
@@ -82,7 +123,7 @@ class RunnerTests(unittest.TestCase):
 
         class Client:
             def summary(self):
-                return {"accounted_cost_usd": 1.0}
+                return {"budget_committed_usd": 1.0}
 
         def fake(client, case, cell, **kw):
             seen.append(case.case_id)
@@ -131,6 +172,19 @@ class AnalyzeTests(unittest.TestCase):
             self.assertEqual(manager["statuses"], {"finished": 3, "infra_error": 1})
             self.assertEqual((both["setup_invalid"], both["valid_finished"], both["headline_passes"]), (1, 0, 0))
             self.assertEqual(len(manager["setup_invalid_records"]), 2)
+
+    def test_malformed_finished_record_is_counted_not_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            rec(out / "cells/a/ok", "none")
+            rec(out / "cells/a/bad", "none")
+            path = out / "cells/a/bad/record.json"
+            data = json.loads(path.read_text())
+            data["rules"] = {"changed": {}}
+            path.write_text(json.dumps(data))
+            cell = RB.analyze(out)["cells"]["relay__none__existing"]
+            self.assertEqual(cell["statuses"], {"finished": 1, "malformed_record": 1})
+            self.assertEqual(cell["valid_finished"], 1)
 
 
 if __name__ == "__main__":
