@@ -228,6 +228,24 @@ class ImageChecksTest(unittest.TestCase):
             # Base checks and the gold patch ran before the network opened.
             self.assertTrue(any("apply" in c or "cat-file" in c for c in calls[:connect]))
 
+    def test_gold_runs_repeat_in_fresh_containers(self):
+        runner = FakeRunner()
+        res = validate.validate_task(make_row(), runner, "/r", gold_runs=3)
+        self.assertTrue(res["valid"], res["reason"])
+        self.assertEqual(res["gold_runs_passed"], 3)
+        self.assertEqual(len([c for c in runner.calls if c[:2] == ["docker", "run"]]), 4)
+
+    def test_flaky_gold_run_is_invalid(self):
+        class Flaky(FakeRunner):
+            def run(self, args, *, input=None, timeout, max_output=None):
+                if args[:2] == ["docker", "run"] and self.runs == 2:
+                    self.gold_log = FAIL_LOG  # the second gold container fails
+                return super().run(args, input=input, timeout=timeout, max_output=max_output)
+        res = validate.validate_task(make_row(), Flaky(), "/r", gold_runs=3)
+        self.assertFalse(res["valid"])
+        self.assertEqual(res["gold_runs_passed"], 1)
+        self.assertIn("flaky: gold resolved 1 of 2 runs", res["reason"])
+
     def test_gold_run_does_not_reset_test_files(self):
         runner = FakeRunner()
         validate.validate_task(make_row(), runner, "/r")

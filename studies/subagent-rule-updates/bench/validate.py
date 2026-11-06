@@ -115,16 +115,25 @@ def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Op
 
 
 def validate_task(row: TaskRow, runner: Any, workdir: str, *, paths: Iterable[str] = (),
-                  network: Optional[str] = None, scoring_network: Optional[str] = None) -> dict:
+                  network: Optional[str] = None, scoring_network: Optional[str] = None, gold_runs: int = 1) -> dict:
     """paths: rule paths to check with git check-ignore (see rule_paths). network: docker run --network.
-    scoring_network: joined just before the tests run, as in a live run."""
+    scoring_network: joined just before the tests run, as in a live run. gold_runs: the gold patch must
+    resolve the tests in this many fresh containers in a row, which catches flaky tests."""
     result: Dict[str, Any] = {"instance_id": row.instance_id, "gold_resolved": False,
                               "base_fail_to_pass_failing": False, "has_timeout": False,
                               "has_base_commit": False, "ignored_rule_paths": None, "valid": False, "reasons": []}
     paths = list(paths)
     try:
         _base_run(row, runner, workdir, result, paths, network, scoring_network)
-        _gold_run(row, runner, workdir, result, network, scoring_network)
+        result["gold_runs_passed"] = 0
+        for _ in range(gold_runs):
+            _gold_run(row, runner, workdir, result, network, scoring_network)
+            if not result["gold_resolved"]:
+                break
+            result["gold_runs_passed"] += 1
+        if 0 < result["gold_runs_passed"] < gold_runs:
+            result["reasons"].append("flaky: gold resolved %d of %d runs" % (result["gold_runs_passed"],
+                                                                               result["gold_runs_passed"] + 1))
         if not result["has_timeout"]:
             result["reasons"].append("image has no timeout command")
     except Exception as exc:  # one bad task must not stop the rest
@@ -146,7 +155,7 @@ def task_ids(cases: Iterable[Any]) -> List[str]:
 
 def validate_manifest(cases: Iterable[Any], rows: Dict[str, TaskRow], output: Path, runner: Any, *,
                       rules_dir: Optional[Path] = None, network: Optional[str] = None,
-                      scoring_network: Optional[str] = None) -> dict:
+                      scoring_network: Optional[str] = None, gold_runs: int = 1) -> dict:
     """With rules_dir, each task's repository rule paths are checked for being gitignored."""
     from bench.rules import load_rules
     cases = list(cases)
@@ -163,11 +172,11 @@ def validate_manifest(cases: Iterable[Any], rows: Dict[str, TaskRow], output: Pa
             full = {"instance_id": iid, "valid": False, "error": "task not found in dataset"}
         else:
             full = validate_task(row, runner, row.workdir, paths=paths_by_repo.get(row.repo, ()), network=network,
-                                 scoring_network=scoring_network)
+                                 scoring_network=scoring_network, gold_runs=gold_runs)
         (output / (iid + ".json")).write_text(json.dumps(full, indent=2) + "\n")
         # Summary keeps ids, booleans and reason strings only: no test names, no problem text.
         tasks[iid] = {k: full[k] for k in ("valid", "gold_resolved", "base_fail_to_pass_failing", "has_timeout",
-                                           "has_base_commit", "reason", "error") if k in full}
+                                           "has_base_commit", "gold_runs_passed", "reason", "error") if k in full}
     summary = {"tasks": tasks, "valid_ids": [i for i, t in tasks.items() if t["valid"]]}
     (output / "validation.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
@@ -180,6 +189,8 @@ def main(argv: Any = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=STUDY / "configs/bench-v1.json",
                         help="Read container_network (default none) and scoring_network from it")
+    parser.add_argument("--gold-runs", type=int, default=1,
+                        help="Fresh gold-patch runs that must all resolve the tests (default 1)")
     args = parser.parse_args(argv)
     from bench.cases import load_manifest
     from bench.run_bench import check_output_path
@@ -190,7 +201,7 @@ def main(argv: Any = None) -> int:
     rows = {r.instance_id: r for r in load_rows(args.data_root / PARQUET)}
     summary = validate_manifest(cases, rows, output, DockerRunner(), rules_dir=RULES_DIR,
                                  network=config.get("container_network", "none"),
-                                 scoring_network=config.get("scoring_network"))
+                                 scoring_network=config.get("scoring_network"), gold_runs=args.gold_runs)
     print("%d of %d tasks valid" % (len(summary["valid_ids"]), len(summary["tasks"])))
     return 0
 
