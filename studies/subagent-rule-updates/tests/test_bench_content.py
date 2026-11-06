@@ -134,6 +134,27 @@ class RuleFileTests(unittest.TestCase):
                         self.assertLessEqual(text.count(". "), 2)
                         self.assertLess(len(text), 300)
 
+    def test_every_rule_has_a_valid_repo_prior(self):
+        for path in rule_files():
+            for e in json.loads(path.read_text()):
+                with self.subTest(path=path.name, rule=e["id"]):
+                    self.assertIn(e.get("repo_prior"), ("old", "new", "none"))
+
+    def test_each_wording_stands_alone(self):
+        """store and creation_pin give a fresh worker only the current wording, so neither
+        version may lean on the other: it names its own location and not the other's."""
+        for repo, rules in all_rules().items():
+            for r in rules:
+                old_loc = r.old.get("dir") or r.old.get("path_glob")
+                new_loc = r.new.get("dir") or r.new.get("path_glob")
+                with self.subTest(repo=repo, rule=r.id):
+                    self.assertIn(old_loc, r.original)
+                    self.assertNotIn(new_loc, r.original)
+                    self.assertIn(new_loc, r.changed)
+                    self.assertNotIn(old_loc, r.changed)
+                    for text in (r.original, r.changed):
+                        self.assertNotRegex(text, r"(?i)\binstead\b|\bstop using\b|\bno longer\b")
+
 
 class ExampleTests(unittest.TestCase):
     def test_examples_classify_as_labeled(self):
@@ -168,16 +189,16 @@ class ExampleTests(unittest.TestCase):
     def test_repository_convention_files_do_not_fire(self):
         """The repositories' own conventions (what a no-rule agent copies) match neither version."""
         convention = {
-            "aio-libs/aiohttp": ["CHANGES/11296.bugfix.rst", "tests/test_client_functional.py"],
-            "python-attrs/attrs": ["changelog.d/1417.change.md", "CHANGELOG.md"],
+            "aio-libs/aiohttp": ["CHANGES/1234.bugfix.rst", "tests/test_client_functional.py"],
+            "python-attrs/attrs": ["changelog.d/1234.change.md", "CHANGELOG.md"],
             "pallets/click": ["CHANGES.rst", "docs/shell-completion.rst"],
-            "pypa/setuptools": ["newsfragments/4985.feature.rst", "NEWS.rst"],
+            "pypa/setuptools": ["newsfragments/1234.feature.rst", "NEWS.rst"],
             "HypothesisWorks/hypothesis": ["hypothesis-python/RELEASE.rst",
                                            "hypothesis-python/docs/changelog.rst"],
-            "Qiskit/qiskit-terra": ["releasenotes/notes/add-equiv-stabilizerstate-6ef8790c765690c1.yaml",
-                                    "test/python/quantum_info/states/test_stabilizerstate.py"],
+            "Qiskit/qiskit-terra": ["releasenotes/notes/fix-example-0123456789abcdef.yaml",
+                                    "test/python/quantum_info/states/test_example.py"],
             "Delgan/loguru": ["CHANGELOG.rst", "docs/project/changelog.rst"],
-            "dbt-labs/dbt-redshift": [".changes/unreleased/Fixes-20241217-181340.yaml", "CHANGELOG.md"],
+            "dbt-labs/dbt-redshift": [".changes/unreleased/Fixes-20250101-000000.yaml", "CHANGELOG.md"],
             "PennyLaneAI/pennylane": ["doc/releases/changelog-dev.md", "tests/test_circuit_graph.py"],
             "stac-utils/pystac": ["CHANGELOG.md", "docs/api/pystac.rst"],
         }
