@@ -1,6 +1,6 @@
 # Benchmark design: rule changes across a manager and persistent workers
 
-This is a design for a benchmark, not a completed study. Calls marked *(our call)* were made while drafting and were not discussed with the user. Everything else was agreed in conversation on 2026-11-05.
+This is a design for a benchmark, not a completed study. The benchmark is now built in `bench/`, and the [As built](#as-built) section records what the build settled and what is still open. Calls marked *(our call)* were made while drafting and were not discussed with the user. Everything else was agreed in conversation on 2026-11-05.
 
 ## Why
 
@@ -68,9 +68,9 @@ The headline number for a delivery method is the share of scored tasks that foll
 
 **Tasks.** SWE-rebench V2 tasks from the repositories [VibeMemBench](https://github.com/AlibabaResearch/DAMO-ConvAI/tree/main/VibeMemBench) covers (111 packaged tasks across 90 repositories). Most of those repositories have only one packaged task, and each case needs at least two from the same repository. So other SWE-rebench V2 tasks from the same repositories fill the gaps *(our call)*. SWE-bench Verified is a fallback only: it covers about a dozen repositories, overlaps little with VibeMemBench, and is widely contaminated.
 
-**Execution.** Real tasks need a shell and a test runner, which the current harness does not have. Add `run_command` and `run_tests` tools inside each task's container to `harness.py`, rather than moving to another agent scaffold *(our call)*. Every command is logged like the existing write log.
+**Execution.** Real tasks need a shell and a test runner, which the current harness does not have. The build adds `read_file`, `write_file`, and `run_command` tools inside each task's container (`bench/container.py`), rather than moving to another agent scaffold *(our call)*. There is no separate `run_tests` tool. Workers run tests through `run_command`, and the source benchmark's tests are run only by the scorer. Every command is logged like the existing write log.
 
-**History before compaction.** VibeMemBench's 3,634 real agent trajectories from the same repositories replace the current study's synthetic filler tasks. The manager's history is built from its own delegation turns over earlier tasks *(our call; the builder decides the exact construction)*.
+**History before compaction.** VibeMemBench's 3,634 real agent trajectories from the same repositories replace the current study's synthetic filler tasks. The manager's history is built from generated delegation turns over earlier tasks *(our call)*. The build settled the construction under [As built](#as-built).
 
 **Optional second track.** [SlopCodeBench](https://arxiv.org/html/2603.24755v1) problems, where the rule change lands between checkpoints in one carried-forward workspace. Add it only after the main track works, because a full run costs about $84 to $423.
 
@@ -88,7 +88,7 @@ Each rule ships with:
 
 A rule passes screening when an agent with no rule follows neither version, and an agent told either version follows it. This is the same test as the study's `screen-001`. Rules that fail are dropped.
 
-Each case has two rules, one that changes and one that does not *(our call, matching the current study)*.
+Each case has two rules, one that changes and one that does not *(our call, matching the current study)*. The v1 manifest makes each repository's two rules two cases, with each rule taking a turn as the changed one.
 
 The repository stays as it is, including its contributor guide and existing examples *(our call)*. That means the repository's own files can argue for the original version after the change, which is realistic and part of the test. It also means a real convention can fail screening, because an agent with no rule copies what it sees in the repository. When that happens, write both versions ourselves (for example, a ticket-ID format in commit-style notes the repository does not use) rather than editing the repository.
 
@@ -129,12 +129,12 @@ This project builds the benchmark. Running the full evaluation is a separate, la
 - the harness extensions: container tools, manager compaction, the four delivery conditions,
 - a runner that can execute any case on any model, with costs recorded.
 
-The build makes no paid model calls. Two checks that need a real model move to the start of evaluation:
+The build made no paid model calls. Two checks that need a real model move to the start of evaluation:
 
 - **Screening.** Every rule must be screened on the model being evaluated before its results count. Until then, rules are marked unscreened, and some may be dropped.
 - **End-to-end model runs.** The build instead tests the harness offline with scripted agents, like the study's existing `tests/` package. These prove the containers, tools, compaction, conditions, and checkers fit together, not how a real model behaves.
 
-The build's only cost is AWS: pulling task containers and confirming each task's tests pass with its reference fix and fail without it.
+The build's only cost is AWS: pulling task containers and confirming each task's tests pass with its reference fix and fail without it. That validation has not run yet, because the AWS host is not launched.
 
 ## Infrastructure
 
@@ -144,11 +144,75 @@ When the full evaluation is run later, almost all of its cost will be model call
 
 ## Growth plan
 
-1. **Feasibility.** Check licenses. Set up an AWS x86 instance with Docker. Confirm a few SWE-rebench V2 tasks build and their tests behave as expected.
-2. **First version.** About 10 repositories with two rules each, every condition and placement defined, and the harness passing offline tests.
+1. **Feasibility.** Check licenses. Set up an AWS x86 instance with Docker. Confirm a few SWE-rebench V2 tasks build and their tests behave as expected. Licenses are checked for SWE-rebench V2 and VibeMemBench. The AWS part is not done.
+2. **First version.** About 10 repositories with two rules each, every condition and placement defined, and the harness passing offline tests. This is built (see below), with the open items listed there.
 3. **More repositories.**
 4. **Harder changes.** Several amendments in one session, revocations, and changes that arrive while a worker is mid-task. The study's store and re-insertion results already say a multi-amendment test is needed to separate those two methods.
 5. **SlopCodeBench track.**
+
+## As built
+
+This section records what the build in `bench/` settled. It changes the design only where stated.
+
+### Trajectories and history replay
+
+VibeMemBench trajectories use native tool calls: assistant messages carry `tool_calls` with a bash `command`, and tool messages carry the output. `bench/history.py` replays them as `run_command` calls with fresh call IDs, keeps only the first user message and the assistant and tool turns, truncates long outputs, and drops the final submit step. Replayed worker history is real agent work.
+
+The manager side of each earlier task is generated, not taken from the trajectory. The manager receives the task's problem statement, delegates it with a `message_worker` call, gets the worker's reply, and answers "Done." These delegation turns never restate the rules. So a rule can only reach the worker through the first user message, the change, or the condition's delivery.
+
+### Containers
+
+- The working directory is `/<repo name>`, the checkout path in SWE-rebench V2 images.
+- `run_command` uses an in-container `timeout`, because that is the only reliable way to kill the whole process tree. The host timeout is longer. A timed-out command returns exit code 124. `bench/validate.py` checks that each image has `timeout`.
+- Task 1 and task 2 each get their own container, started from that task's image and commit. The workspace does not carry over between them.
+
+### Cells and statuses
+
+The grid has 19 cells:
+
+| Delivery | Worker | Placements | Cells |
+|---|---|---|---|
+| `relay`, `reinsert`, `store` | existing | none, manager, worker, both | 12 |
+| `relay`, `creation_pin`, `store` | new | none, manager | 6 |
+| `no_change` | existing | none | 1 |
+
+A run ends in one status:
+
+- `finished`: both turns completed and the second task was scored.
+- `provider_error`: a model request raised. The record is saved and the run stops, because the failure may mean budget or billing trouble.
+- `compaction_error`: the summarizer answered without a complete summary.
+- `infra_error`: a container or other setup failure.
+
+Unfinished records are never scored. Manager turns that end without finishing are recorded with a `manager_` status prefix. Analysis also flags a finished record as `setup_invalid` when its placement names a history that never had a non-skipped compaction. This happens, for example, when the pi port keeps the tail and skips compaction below its threshold. Such a cell would be a no-op compaction, so it is excluded from rates and counted separately.
+
+There is no resume. A partial run needs a fresh output root, and `--resume` would have bypassed the spending cap. The runner refuses an existing model directory.
+
+### Screening
+
+Screening uses one worker on each case's first task, with three arms: no rule, original wording, and changed wording. Only `finished` runs count. Runs that end on `call_limit` or `model_protocol_error` are treated as unfinished in every arm and reported as a status mix, because truncated no-rule runs would bias the no-rule arm toward passing.
+
+### v1 content
+
+Ten repositories, two rules each, which gives 20 rules and 20 cases: `aio-libs/aiohttp`, `dbt-labs/dbt-redshift`, `Delgan/loguru`, `HypothesisWorks/hypothesis`, `pallets/click`, `PennyLaneAI/pennylane`, `pypa/setuptools`, `python-attrs/attrs`, `Qiskit/qiskit-terra`, and `stac-utils/pystac`. Each case carries a first task, a second task, and four earlier tasks as history, all from the same repository.
+
+Rule names are `change-entry`, `change-note`, `change-summary`, `changes-entry`, and `news-entry` (a change record), and `behavior-note`, `upgrade-note`, and `regression-test` (a second kind of file). Rule files are in `bench/rules/` and the manifest is `bench/manifests/v1.json`.
+
+Three choices shaped the rules:
+
+- **No issue number.** Rules omit the issue number because agents are never told it. The problem statements do not contain it. This keeps rules followable without changing how tasks are shown. The cost is that rules are less ticket-specific. A later option is for the harness to prefix "Issue #N:".
+- **One change type.** Every rule changes in the same way: from one file, either an existing file or a location that may not exist yet, to a new file per change in a new directory. The checker labels the final files by looking for an added line in the old file or a new file in the new directory.
+- **`repo_prior`.** Each rule records `repo_prior` as `old`, `new`, or `none`. It says whether the repository's own files pull an agent toward the old location, the new one, or neither. The change direction stays file to per-change directory for all rules. Recording the prior keeps v1 stable and lets analysis stratify by it. Without stratifying, the repository's pull confounds comparisons of delivery methods.
+
+### Infrastructure state
+
+`bench/aws/user-data.sh` is the cloud-init script for the Ubuntu x86 host. It installs Docker, Python 3.12, and pyarrow, and creates `ssm-user` in the docker group. The AWS host is not launched yet, and no instance is recorded.
+
+### Open items
+
+- All 20 rules are unscreened. Some may be dropped at screening.
+- All tasks are unvalidated. The manifest may shrink after validation on AWS.
+- The live path has not run against real Docker or a real model. Offline tests use scripted clients and a fake container runner.
+- The SlopCodeBench track is not started, and its license is unchecked.
 
 ## What is left to the builder
 
