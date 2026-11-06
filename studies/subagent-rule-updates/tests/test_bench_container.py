@@ -47,6 +47,33 @@ class ContainerTest(unittest.TestCase):
         self.assertEqual(runner.calls[0]["args"],
                          ["docker", "run", "-d", "--rm", "--network", "none", "img:1", "sleep", "infinity"])
 
+    def test_open_network_moves_container_to_scoring_network(self):
+        ws, runner = make(network="none", scoring_network="bridge")
+        ws.open_network()
+        self.assertEqual([c["args"] for c in runner.calls],
+                         [["docker", "network", "disconnect", "none", "cid123"],
+                          ["docker", "network", "connect", "bridge", "cid123"]])
+        self.assertEqual(ws.network, "bridge")
+
+    def test_open_network_noop_without_scoring_network(self):
+        for kw in ({"network": "none"}, {"network": "bridge", "scoring_network": "bridge"}, {}):
+            ws, runner = make(**kw)
+            ws.open_network()
+            self.assertEqual(runner.calls, [])
+
+    def test_open_network_without_starting_network_only_connects(self):
+        ws, runner = make(scoring_network="bridge")
+        ws.open_network()
+        self.assertEqual([c["args"] for c in runner.calls], [["docker", "network", "connect", "bridge", "cid123"]])
+
+    def test_open_network_failure_raises(self):
+        ws, _ = make(lambda args, input: (1, "", "no such network"), network="none", scoring_network="nope")
+        with self.assertRaises(RuntimeError) as cm:
+            ws.open_network()
+        self.assertIn("no such network", str(cm.exception))
+        with self.assertRaises(RuntimeError):
+            ContainerWorkspace("img:1", FakeRunner(), workdir=WD, scoring_network="bridge").open_network()
+
     def test_execute_before_start_errors(self):
         ws = ContainerWorkspace("img:1", FakeRunner(), workdir=WD)
         self.assertIn("error", ws.execute("run_command", {"command": "ls"}, call_index=0))

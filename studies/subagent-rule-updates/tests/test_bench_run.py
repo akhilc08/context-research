@@ -186,6 +186,14 @@ class RunnerTests(unittest.TestCase):
             ws = RB.live_workspace_factory("none")(task_row("o__r-1", "x"), Path(d))
             self.assertEqual(ws.network, "none")
 
+    def test_config_workspace_factory_sets_both_networks(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = RB.config_workspace_factory({"container_network": "none", "scoring_network": "bridge"})(
+                task_row("o__r-1", "x"), Path(d))
+            self.assertEqual((ws.network, ws.scoring_network), ("none", "bridge"))
+            ws = RB.config_workspace_factory({})(task_row("o__r-1", "x"), Path(d))
+            self.assertEqual((ws.network, ws.scoring_network), ("none", None))
+
     def test_resume_flag_removed(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(SystemExit):

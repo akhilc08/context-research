@@ -239,10 +239,16 @@ def freeze(model_dir: Path, config: dict, selected: dict, config_path: Path, pla
         "gates": gates or {}})
 
 
-def live_workspace_factory(network: Optional[str] = "none"):
+def live_workspace_factory(network: Optional[str] = "none", scoring_network: Optional[str] = None):
     from bench.container import ContainerWorkspace, DockerRunner
     return lambda row, d: ContainerWorkspace(row.image_name, DockerRunner(), workdir=row.workdir,
-                                             event_log=d / "tool_events.jsonl", network=network)
+                                             event_log=d / "tool_events.jsonl", network=network,
+                                             scoring_network=scoring_network)
+
+
+def config_workspace_factory(config: dict):
+    """Agent commands run on container_network; the scorer joins scoring_network first."""
+    return live_workspace_factory(config.get("container_network", "none"), config.get("scoring_network"))
 
 
 def missing_images(images: List[str], runner: Any = None) -> List[str]:
@@ -354,7 +360,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, trajectories=trajectories,
                               rules_dir=rules_dir,
-                              workspace_factory=live_workspace_factory(config.get("container_network", "none")))
+                              workspace_factory=config_workspace_factory(config))
         finally:
             save(model_dir / "provider_summary.json", client.summary())
             analyze(model_dir)

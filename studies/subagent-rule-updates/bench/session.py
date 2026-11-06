@@ -256,6 +256,7 @@ def score(ws: ContainerWorkspace, case: Case, rules: Dict[str, RuleSpec], row: T
     issue = issue_number(row.instance_id)
     outcomes = {"changed": {"rule": case.changed_rule, **classify(rules[case.changed_rule], changes, issue=issue)},
                 "unchanged": {"rule": case.unchanged_rule, **classify(rules[case.unchanged_rule], changes, issue=issue)}}
+    ws.open_network()
     return {"rules": outcomes, "changed_paths": sorted(changes), "tests": score_tests(ws, row)}
 
 
@@ -295,7 +296,7 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
                               "user_turns": texts, "turns": [], "compactions": [], "config": {
                                   k: config.get(k) for k in ("compact_threshold_chars", "manager_compact_threshold_chars",
                                                              "compactor", "max_manager_calls", "max_worker_calls",
-                                                             "container_network")}}
+                                                             "container_network", "scoring_network")}}
     status = "finished"
     try:
         ws = workspace_factory(rows[case.first], outdir / "task1")

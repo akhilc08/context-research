@@ -267,7 +267,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         failure = None
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, rules_dir=rules_dir,
-                              workspace_factory=RB.live_workspace_factory(config.get("container_network", "none")))
+                              workspace_factory=RB.config_workspace_factory(config))
         finally:
             save(model_dir / "provider_summary.json", client.summary())
             analyze(model_dir, sorted({e["rule_id"] for e in plan}))

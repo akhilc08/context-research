@@ -67,12 +67,14 @@ def _check_base(ws: ContainerWorkspace, row: TaskRow, paths: List[str], result: 
         result["reasons"].append("rule paths are gitignored: " + ", ".join(result["ignored_rule_paths"]))
 
 
-def _base_run(row: TaskRow, runner: Any, workdir: str, result: dict, paths: List[str], network: Optional[str]) -> None:
-    ws = ContainerWorkspace(row.image_name, runner, workdir=workdir, network=network)
+def _base_run(row: TaskRow, runner: Any, workdir: str, result: dict, paths: List[str], network: Optional[str],
+              scoring_network: Optional[str]) -> None:
+    ws = ContainerWorkspace(row.image_name, runner, workdir=workdir, network=network, scoring_network=scoring_network)
     ws.start()
     try:
         result["has_timeout"] = _has_timeout(ws)
         _check_base(ws, row, paths, result)
+        ws.open_network()
         scored = score_tests(ws, row)
     finally:
         ws.stop()
@@ -88,8 +90,9 @@ def _base_run(row: TaskRow, runner: Any, workdir: str, result: dict, paths: List
         result["reasons"].append("a FAIL_TO_PASS test passes without the gold patch")
 
 
-def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Optional[str]) -> None:
-    ws = ContainerWorkspace(row.image_name, runner, workdir=workdir, network=network)
+def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Optional[str],
+              scoring_network: Optional[str]) -> None:
+    ws = ContainerWorkspace(row.image_name, runner, workdir=workdir, network=network, scoring_network=scoring_network)
     ws.start()
     try:
         code, _, err = ws._exec(["git", "apply", "-"], input=row.patch, interactive=True, cwd=workdir,
@@ -98,6 +101,7 @@ def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Op
             result["reasons"].append("gold patch does not apply: " + err.strip()[-300:])
             return
         # No reset here: a gold patch that edits test-patch files must still show up as a conflict.
+        ws.open_network()
         scored = score_tests(ws, row, reset_test_files=False)
     finally:
         ws.stop()
@@ -111,15 +115,16 @@ def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Op
 
 
 def validate_task(row: TaskRow, runner: Any, workdir: str, *, paths: Iterable[str] = (),
-                  network: Optional[str] = None) -> dict:
-    """paths: rule paths to check with git check-ignore (see rule_paths). network: docker run --network."""
+                  network: Optional[str] = None, scoring_network: Optional[str] = None) -> dict:
+    """paths: rule paths to check with git check-ignore (see rule_paths). network: docker run --network.
+    scoring_network: joined just before the tests run, as in a live run."""
     result: Dict[str, Any] = {"instance_id": row.instance_id, "gold_resolved": False,
                               "base_fail_to_pass_failing": False, "has_timeout": False,
                               "has_base_commit": False, "ignored_rule_paths": None, "valid": False, "reasons": []}
     paths = list(paths)
     try:
-        _base_run(row, runner, workdir, result, paths, network)
-        _gold_run(row, runner, workdir, result, network)
+        _base_run(row, runner, workdir, result, paths, network, scoring_network)
+        _gold_run(row, runner, workdir, result, network, scoring_network)
         if not result["has_timeout"]:
             result["reasons"].append("image has no timeout command")
     except Exception as exc:  # one bad task must not stop the rest
@@ -140,7 +145,8 @@ def task_ids(cases: Iterable[Any]) -> List[str]:
 
 
 def validate_manifest(cases: Iterable[Any], rows: Dict[str, TaskRow], output: Path, runner: Any, *,
-                      rules_dir: Optional[Path] = None, network: Optional[str] = None) -> dict:
+                      rules_dir: Optional[Path] = None, network: Optional[str] = None,
+                      scoring_network: Optional[str] = None) -> dict:
     """With rules_dir, each task's repository rule paths are checked for being gitignored."""
     from bench.rules import load_rules
     cases = list(cases)
@@ -156,7 +162,8 @@ def validate_manifest(cases: Iterable[Any], rows: Dict[str, TaskRow], output: Pa
         if row is None:
             full = {"instance_id": iid, "valid": False, "error": "task not found in dataset"}
         else:
-            full = validate_task(row, runner, row.workdir, paths=paths_by_repo.get(row.repo, ()), network=network)
+            full = validate_task(row, runner, row.workdir, paths=paths_by_repo.get(row.repo, ()), network=network,
+                                 scoring_network=scoring_network)
         (output / (iid + ".json")).write_text(json.dumps(full, indent=2) + "\n")
         # Summary keeps ids, booleans and reason strings only: no test names, no problem text.
         tasks[iid] = {k: full[k] for k in ("valid", "gold_resolved", "base_fail_to_pass_failing", "has_timeout",
@@ -172,16 +179,18 @@ def main(argv: Any = None) -> int:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=STUDY / "configs/bench-v1.json",
-                        help="Read container_network from it (default none)")
+                        help="Read container_network (default none) and scoring_network from it")
     args = parser.parse_args(argv)
     from bench.cases import load_manifest
     from bench.run_bench import check_output_path
     from bench.sources import load_rows
     output = check_output_path(args.output)
-    network = json.loads(args.config.read_text()).get("container_network", "none")
+    config = json.loads(args.config.read_text())
     cases = load_manifest(args.manifest)
     rows = {r.instance_id: r for r in load_rows(args.data_root / PARQUET)}
-    summary = validate_manifest(cases, rows, output, DockerRunner(), rules_dir=RULES_DIR, network=network)
+    summary = validate_manifest(cases, rows, output, DockerRunner(), rules_dir=RULES_DIR,
+                                 network=config.get("container_network", "none"),
+                                 scoring_network=config.get("scoring_network"))
     print("%d of %d tasks valid" % (len(summary["valid_ids"]), len(summary["tasks"])))
     return 0
 

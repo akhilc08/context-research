@@ -49,8 +49,12 @@ class FakeRunner:
         self.base = {"app.py": "x = 1\n"}
         self.files = dict(self.base)
         self.started, self.removed = 0, 0
+        self.calls = []
 
     def run(self, args, *, input=None, timeout, max_output=None):
+        self.calls.append(list(args))
+        if args[:2] == ["docker", "network"]:
+            return 0, "", ""
         if args[:2] == ["docker", "run"]:
             self.started += 1
             return 0, "cid%d\n" % self.started, ""
@@ -89,13 +93,14 @@ class FakeRunner:
 
 
 class Factory:
-    def __init__(self, **runner_kwargs):
+    def __init__(self, workspace_kwargs=None, **runner_kwargs):
         self.runners, self.runner_kwargs = [], runner_kwargs
+        self.workspace_kwargs = workspace_kwargs or {}
 
     def __call__(self, task_row, directory):
         runner = FakeRunner(**self.runner_kwargs)
         self.runners.append(runner)
-        return ContainerWorkspace(task_row.image_name, runner, workdir=task_row.workdir)
+        return ContainerWorkspace(task_row.image_name, runner, workdir=task_row.workdir, **self.workspace_kwargs)
 
 
 def call(name, args, n):
@@ -225,6 +230,21 @@ class SessionTest(unittest.TestCase):
         # One context hash per model request.
         self.assertEqual(len(record["calls"]), len(client.requests))
         self.assertTrue(all(len(c["context_hash"]) == 64 for c in record["calls"]))
+
+    def test_network_opens_only_for_scoring(self):
+        factory = Factory({"network": "none", "scoring_network": "bridge"})
+        record, _, _ = self.run_cell(SE.Cell("relay", "none", "existing"), factory=factory)
+        self.assertEqual(record["status"], "finished")
+        first, second = factory.runners
+        self.assertFalse([c for c in first.calls if c[:2] == ["docker", "network"]])
+        connect = second.calls.index(["docker", "network", "connect", "bridge", "cid1"])
+        self.assertEqual(second.calls[connect - 1], ["docker", "network", "disconnect", "none", "cid1"])
+        # Agent writes come before the switch; the scorer's test command comes after it.
+        writes = [i for i, c in enumerate(second.calls) if c[:2] == ["docker", "exec"] and "sh" in c and "-c" in c]
+        tests = [i for i, c in enumerate(second.calls) if "bash" in c and "-lc" in c]
+        self.assertTrue(writes and tests)
+        self.assertLess(max(writes), connect)
+        self.assertGreater(min(tests), connect)
 
     def test_placement_selects_histories(self):
         for placement, names in (("manager", {"manager"}), ("worker", {"worker-1"}), ("both", {"manager", "worker-1"})):

@@ -117,9 +117,11 @@ _WRITE_SCRIPT = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
 
 class ContainerWorkspace:
     def __init__(self, image: str, runner: Any, *, workdir: str, event_log: Optional[Path] = None,
-                 command_timeout: int = 120, max_output_chars: int = 10000, network: Optional[str] = None):
+                 command_timeout: int = 120, max_output_chars: int = 10000, network: Optional[str] = None,
+                 scoring_network: Optional[str] = None):
         self.image = image
         self.network = network  # Passed to docker run --network when set, e.g. "none".
+        self.scoring_network = scoring_network  # Joined by open_network() before scoring; None keeps network.
         self.runner = runner
         self.workdir = workdir.rstrip("/")
         self.event_log = event_log
@@ -142,6 +144,21 @@ class ContainerWorkspace:
             return
         self.runner.run(["docker", "rm", "-f", self.container_id], timeout=60)
         self.container_id = None
+
+    def open_network(self) -> None:
+        """Move the container from network to scoring_network, so the hidden tests can reach the
+        network the agent never had. A no-op when scoring_network is unset or the same."""
+        if self.container_id is None:
+            raise RuntimeError("Container not started")
+        if not self.scoring_network or self.scoring_network == self.network:
+            return
+        steps = ([["docker", "network", "disconnect", self.network, self.container_id]] if self.network else [])
+        steps.append(["docker", "network", "connect", self.scoring_network, self.container_id])
+        for args in steps:
+            code, _, err = self.runner.run(args, timeout=60, max_output=2000)
+            if code != 0:
+                raise RuntimeError("%s failed (%s): %s" % (" ".join(args[:3]), code, err.strip()))
+        self.network = self.scoring_network
 
     def _exec(self, cmd: List[str], *, input: Optional[str] = None, timeout: Optional[int] = None,
               interactive: bool = False, cwd: Optional[str] = None,

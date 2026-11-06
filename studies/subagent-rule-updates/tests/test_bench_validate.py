@@ -215,6 +215,19 @@ class ImageChecksTest(unittest.TestCase):
         self.assertEqual(len(runs), 2)
         self.assertTrue(all(c[4:6] == ["--network", "none"] for c in runs))
 
+    def test_scoring_network_joined_before_tests_in_both_runs(self):
+        runner = FakeRunner()
+        res = validate.validate_task(make_row(), runner, "/r", network="none", scoring_network="bridge")
+        self.assertTrue(res["valid"], res["reason"])
+        for cid in ("cid1", "cid2"):
+            calls = [c for c in runner.calls if cid in c]
+            connect = calls.index(["docker", "network", "connect", "bridge", cid])
+            self.assertEqual(calls[connect - 1], ["docker", "network", "disconnect", "none", cid])
+            test_apply = next(i for i, c in enumerate(calls) if "apply" in c and i > connect)
+            self.assertGreater(test_apply, connect)
+            # Base checks and the gold patch ran before the network opened.
+            self.assertTrue(any("apply" in c or "cat-file" in c for c in calls[:connect]))
+
     def test_gold_run_does_not_reset_test_files(self):
         runner = FakeRunner()
         validate.validate_task(make_row(), runner, "/r")
