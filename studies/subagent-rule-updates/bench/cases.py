@@ -1,16 +1,26 @@
-"""Benchmark cases: two tasks from one repository plus earlier trajectories as history."""
+"""Benchmark cases: two tasks from one repository plus earlier trajectories as history.
+
+python3 bench/cases.py --data-root ~/bench-data --output bench/manifests/v1.json \
+    --exclude-invalid bench/manifests/validation-v1-network-bridge.json
+"""
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
-import compaction as C
+STUDY = Path(__file__).resolve().parents[1]
+if str(STUDY) not in sys.path:
+    sys.path.insert(0, str(STUDY))
 
-from bench.history import load_trajectory, to_worker_messages
-from bench.rules import RuleSpec
-from bench.sources import TaskRow, issue_number
+import compaction as C  # noqa: E402
+
+from bench.history import load_trajectory, to_worker_messages  # noqa: E402
+from bench.rules import RuleSpec, load_rules  # noqa: E402
+from bench.sources import TaskRow, issue_number, load_rows, trajectory_index  # noqa: E402
 
 MANIFEST_VERSION = 1
 
@@ -60,15 +70,20 @@ def _pick_history(trajs: Dict[str, Path], exclude, below: int, history_chars: in
 
 
 def build_cases(rows: List[TaskRow], trajectories: Dict[str, Dict[str, Path]],
-                rules: Dict[str, List[RuleSpec]], *, history_chars: int, seed: int) -> List[Case]:
-    """Two cases per qualifying repository, one per changed rule.
+                rules: Dict[str, List[RuleSpec]], *, history_chars: int, seed: int,
+                exclude_tasks: Iterable[str] = ()) -> List[Case]:
+    """Two cases per qualifying repository, one per changed rule. The two tasks are the
+    repository's latest two, skipping exclude_tasks (tasks that failed validation).
 
     seed does not currently change any outcome: every ordering is fully
     determined by (created_at, issue number, instance id). It is accepted so
     callers can fix it in manifests and so later tie-breaks stay reproducible.
     """
+    exclude_tasks = set(exclude_tasks)
     by_repo: Dict[str, List[TaskRow]] = {}
     for row in rows:
+        if row.instance_id in exclude_tasks:
+            continue
         by_repo.setdefault(row.repo, []).append(row)
     cases: List[Case] = []
     for repo in sorted(by_repo):
@@ -112,3 +127,39 @@ def load_manifest(path: Path) -> List[Case]:
         raise ValueError("unsupported manifest version: %r" %
                          (data.get("version") if isinstance(data, dict) else None))
     return [Case(**{**e, "history": tuple(e["history"])}) for e in data["cases"]]
+
+
+def invalid_tasks(validation: Path) -> List[str]:
+    """Task ids a validate.py summary marks invalid."""
+    tasks = json.loads(Path(validation).read_text())["tasks"]
+    return sorted(i for i, t in tasks.items() if not t["valid"])
+
+
+def main(argv: Any = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=STUDY / "configs/bench-v1.json",
+                        help="Read history_chars and order_seed from it")
+    parser.add_argument("--rules-dir", type=Path, default=STUDY / "bench" / "rules")
+    parser.add_argument("--exclude-invalid", type=Path, action="append", default=[],
+                        help="A validation.json whose invalid tasks are skipped (repeatable)")
+    args = parser.parse_args(argv)
+    from bench.run_bench import HISTORY_DIR, PARQUET
+    config = json.loads(args.config.read_text())
+    rules: Dict[str, List[RuleSpec]] = {}
+    for path in sorted(args.rules_dir.glob("*.json")):
+        repo_rules = load_rules(path)
+        rules[repo_rules[0].repo] = repo_rules
+    rows = [r for r in load_rows(args.data_root.expanduser() / PARQUET) if r.repo in rules]
+    exclude = sorted({i for v in args.exclude_invalid for i in invalid_tasks(v)})
+    cases = build_cases(rows, trajectory_index(args.data_root.expanduser() / HISTORY_DIR), rules,
+                        history_chars=config["history_chars"], seed=config["order_seed"], exclude_tasks=exclude)
+    save_manifest(cases, args.output)
+    print("%d cases from %d repositories; excluded tasks: %s" %
+          (len(cases), len({c.repo for c in cases}), ", ".join(exclude) or "none"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

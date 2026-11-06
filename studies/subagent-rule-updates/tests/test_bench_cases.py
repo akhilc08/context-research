@@ -74,6 +74,16 @@ class CasesTests(unittest.TestCase):
         out = self.build(history_chars=1)
         self.assertEqual(out[0].history, ("o__r-5",))
 
+    def test_excluded_task_shifts_the_pair(self):
+        cs = self.build(exclude_tasks=["o__r-30"])
+        self.assertEqual({(c.first, c.second) for c in cs}, {("o__r-10", "o__r-20")})
+        self.assertTrue(all(issue < 20 for c in cs for issue in map(cases.issue_number, c.history)))
+
+    def test_invalid_tasks_reads_validation_summary(self):
+        path = self.tmp / "validation.json"
+        path.write_text(json.dumps({"tasks": {"a-1": {"valid": True}, "a-2": {"valid": False}}, "valid_ids": ["a-1"]}))
+        self.assertEqual(cases.invalid_tasks(path), ["a-2"])
+
     def test_one_rule_yields_nothing(self):
         self.rules[self.repo] = self.rules[self.repo][:1]
         self.assertEqual(self.build(), [])
