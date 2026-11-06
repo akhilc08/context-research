@@ -40,6 +40,16 @@ HERE = Path(__file__).resolve().parent
 REPO = next(p for p in Path(__file__).resolve().parents if (p / "AGENTS.md").exists())
 RULE_ORDER = ("changelog", "config_values")
 CHANGES = RULE_ORDER
+# A session names the version each rule starts at and which rule changes to which version.
+# "changelog" and "config_values" are the original design. The last two swap which config content is
+# the original rule and which is the amendment, for the amendment-status test
+# (docs/amendment-status-test.md). Keys must not contain "__".
+SESSIONS = {
+    "changelog": {"start": {"changelog": "v1", "config_values": "v1"}, "change": "changelog", "to": "v2"},
+    "config_values": {"start": {"changelog": "v1", "config_values": "v1"}, "change": "config_values", "to": "v2"},
+    "changelog_sfirst": {"start": {"changelog": "v1", "config_values": "v2"}, "change": "changelog", "to": "v2"},
+    "config_reverse": {"start": {"changelog": "v1", "config_values": "v2"}, "change": "config_values", "to": "v1"},
+}
 # condition -> compactor. "generic" compacts at the size threshold with compaction.py and replaces the
 # whole history. "pi" runs pi_compaction.py after the configured steps, the steps where generic
 # compaction happened in rule-compaction-001 and 002 (8, 16, 24).
@@ -59,16 +69,18 @@ U1_LABEL = "original author: user | a later amendment, sent after U0"
 SUMMARY_MARKERS = {"changelog": {"v1": "CHANGELOG", "v2": "HISTORY.md"}, "config_values": {"v1": "config.py", "v2": "settings.get"}}
 
 
-def original_rules() -> str:
-    return "\n".join(f"{i}. {S.RULES[rule]['v1']}" for i, rule in enumerate(RULE_ORDER, 1))
+def original_rules(session: str = "changelog") -> str:
+    start = SESSIONS[session]["start"]
+    return "\n".join(f"{i}. {S.RULES[rule][start[rule]]}" for i, rule in enumerate(RULE_ORDER, 1))
 
 
-def amendment(change: str) -> str:
-    return f"A change to rule {RULE_ORDER.index(change) + 1}, effective now: {S.RULES[change]['v2']}"
+def amendment(session: str) -> str:
+    spec = SESSIONS[session]
+    return f"A change to rule {RULE_ORDER.index(spec['change']) + 1}, effective now: {S.RULES[spec['change']][spec['to']]}"
 
 
-def inline_u0_message() -> str:
-    return C.envelope("No task. Recording the user's project rules for this session.", relay=f"U0 | {U0_LABEL}\n{original_rules()}")
+def inline_u0_message(session: str = "changelog") -> str:
+    return C.envelope("No task. Recording the user's project rules for this session.", relay=f"U0 | {U0_LABEL}\n{original_rules(session)}")
 
 
 def current_rules(change: str | None) -> str:
@@ -155,12 +167,26 @@ def prepare(client: Any, warm: list[dict], change: str, condition: str, prepdir:
     return history, record
 
 
-def score(files: dict[str, str], task: str, change: str) -> dict:
+def score(files: dict[str, str], task: str, session: str) -> dict:
+    spec = SESSIONS[session]
+    change = spec["change"]
     unchanged = next(rule for rule in RULE_ORDER if rule != change)
+    expected = {change: spec["to"], unchanged: spec["start"][unchanged]}
     details = {rule: S.CLASSIFIERS[rule](files, task) for rule in RULE_ORDER}
-    return {"task_attempted": S.task_attempted(files, task), "changed_rule": change,
-            "changed_rule_outcome": details[change]["outcome"], "unchanged_rule": unchanged,
-            "unchanged_rule_outcome": details[unchanged]["outcome"], "details": details}
+    return {"task_attempted": S.task_attempted(files, task), "session": session, "changed_rule": change,
+            "changed_rule_outcome": details[change]["outcome"], "changed_rule_expected": expected[change],
+            "unchanged_rule": unchanged, "unchanged_rule_outcome": details[unchanged]["outcome"],
+            "unchanged_rule_expected": expected[unchanged],
+            "config_role": "amended" if change == "config_values" else "original",
+            "config_expected": expected["config_values"],
+            "config_followed": details["config_values"]["outcome"] == expected["config_values"], "details": details}
+
+
+def planned(config: dict, session: str, condition: str, rep: int) -> bool:
+    """repetition_caps limits a session, a condition, or one "session:condition" pair to fewer repetitions."""
+    caps = config.get("repetition_caps", {})
+    limit = min([config["repetitions"]] + [caps[k] for k in (session, condition, f"{session}:{condition}") if k in caps])
+    return rep < limit
 
 
 def warmup(client: Any, history: list[dict], system: str, stepdir: Path, tag: str, config: dict) -> list[dict]:
@@ -174,24 +200,31 @@ def warmup(client: Any, history: list[dict], system: str, stepdir: Path, tag: st
 def execute(client: Any, output: Path, config: dict) -> None:
     for rep in range(config["repetitions"]):
         repdir = output / f"rep-{rep:02d}"
+        sessions = config.get("sessions", list(CHANGES))
+        pairs = [(s, c) for s in sessions for c in config["conditions"] if planned(config, s, c, rep)]
+        if any(s not in CHANGES for s, c in pairs if c in STORE_CONDITIONS):
+            raise ValueError("Store conditions support only the original sessions")
         warms = {}
-        if any(c not in STORE_CONDITIONS for c in config["conditions"]):
+        for session in dict.fromkeys(s for s, c in pairs if c not in STORE_CONDITIONS):
+            start = tuple(SESSIONS[session]["start"][r] for r in RULE_ORDER)
+            if start in warms:
+                continue
             # Original rules first in the conversation, then the read-only warmup (compaction-006 inline order).
-            warms["relay"] = warmup(client, [{"role": "user", "content": inline_u0_message()}], W.WORKER_SYSTEM,
-                                    repdir / "warmup", f"rep{rep}/warmup", config)
-        if any(c in STORE_CONDITIONS for c in config["conditions"]):
+            name = "warmup" if start == ("v1", "v1") else "warmup-" + "-".join(start)
+            warms[start] = warmup(client, [{"role": "user", "content": inline_u0_message(session)}], W.WORKER_SYSTEM,
+                                  repdir / name, f"rep{rep}/{name}", config)
+        if any(c in STORE_CONDITIONS for s, c in pairs):
             # No rules in the conversation. The store supplies the original rules in the system prompt.
             warms["store"] = warmup(client, [], store_system(None), repdir / "warmup-store", f"rep{rep}/warmup-store", config)
         prepared = {}
-        for change in CHANGES:
-            for condition in config["conditions"]:
-                key = f"{change}__{condition}"
-                warm = warms["store" if condition in STORE_CONDITIONS else "relay"]
-                history, record = prepare(client, warm, change, condition, repdir / "prep" / key, f"rep{rep}/prep/{key}", config)
-                save(repdir / "prep" / key / "record.json", record)
-                if not record["setup_valid"]:
-                    raise RuntimeError(f"Invalid preparation for {key} in repetition {rep}")
-                prepared[key] = (history, record["system"])
+        for change, condition in pairs:
+            key = f"{change}__{condition}"
+            warm = warms["store"] if condition in STORE_CONDITIONS else warms[tuple(SESSIONS[change]["start"][r] for r in RULE_ORDER)]
+            history, record = prepare(client, warm, change, condition, repdir / "prep" / key, f"rep{rep}/prep/{key}", config)
+            save(repdir / "prep" / key / "record.json", record)
+            if not record["setup_valid"]:
+                raise RuntimeError(f"Invalid preparation for {key} in repetition {rep}")
+            prepared[key] = (history, record["system"])
         branches = [(key, task) for key in prepared for task in S.TASKS]
         random.Random(config["order_seed"] + rep).shuffle(branches)
         save(repdir / "branch_order.json", branches)
@@ -208,7 +241,7 @@ def execute(client: Any, output: Path, config: dict) -> None:
             save(branchdir / "result.json", result)
             s = result["score"]
             print(f"BRANCH {rep}:{key}__{task} status={result['status']} changed={s['changed_rule_outcome']} "
-                  f"unchanged={s['unchanged_rule_outcome']}", flush=True)
+                  f"unchanged={s['unchanged_rule_outcome']} config_followed={s['config_followed']}", flush=True)
             if result["status"] == "provider_error":
                 raise RuntimeError(f"Stopping after provider error at {branchdir}")
 
@@ -222,7 +255,7 @@ def analyze(output: Path) -> dict:
              f"Branches: {len(results)}, statuses: {summary['statuses']}.", "",
              "| Changed rule | Condition | n | changed rule: none / v1 (stale) / v2 (current) / both | unchanged rule stays v1 | task attempted |",
              "|---|---|---|---|---|---|"]
-    for change in CHANGES:
+    for change in SESSIONS:
         for condition in CONDITIONS:
             subset = [r for r in valid if r["change"] == change and r["condition"] == condition]
             if not subset:
@@ -236,18 +269,35 @@ def analyze(output: Path) -> dict:
                          f"{cell['unchanged_v1']} | {cell['task_attempted']} |")
     lines += ["", "## Final summary keywords (inspection only, not scored)", "",
               "| Changed rule | Final summaries | mentions new version | mentions old version only | mentions neither |", "|---|---|---|---|---|"]
-    for change in CHANGES:
+    for change in SESSIONS:
         for condition in CONDITIONS:
             group = [r for r in records if r["change"] == change and r["condition"] == condition and r.get("compactions")]
             if not group:
                 continue
+            spec = SESSIONS[change]
+            rule, new_v, old_v = spec["change"], spec["to"], spec["start"][spec["change"]]
             finals = [r["compactions"][-1]["markers"] for r in group]
-            new = sum(m[f"{change}_v2"] for m in finals)
-            old_only = sum(m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
-            neither = sum(not m[f"{change}_v1"] and not m[f"{change}_v2"] for m in finals)
+            new = sum(m[f"{rule}_{new_v}"] for m in finals)
+            old_only = sum(m[f"{rule}_{old_v}"] and not m[f"{rule}_{new_v}"] for m in finals)
+            neither = sum(not m[f"{rule}_{old_v}"] and not m[f"{rule}_{new_v}"] for m in finals)
             summary["summaries"][f"{change}__{condition}"] = {"final_summaries": len(finals), "new": new, "old_only": old_only,
                                                               "neither": neither, "rounds": [len(r["compactions"]) for r in group]}
             lines.append(f"| {change} ({condition}) | {len(finals)} | {new} | {old_only} | {neither} |")
+    if any("config_followed" in r["score"] for r in valid):
+        lines += ["", "## Config rule by content and role", "",
+                  "| Session | Condition | Config content | Config role | Task | followed |", "|---|---|---|---|---|---|"]
+        for change in SESSIONS:
+            for condition in CONDITIONS:
+                for task in S.TASKS:
+                    subset = [r for r in valid if r["change"] == change and r["condition"] == condition and r["task"] == task
+                              and "config_followed" in r["score"]]
+                    if not subset:
+                        continue
+                    content = {"v1": "config.py", "v2": "settings.get"}[subset[0]["score"]["config_expected"]]
+                    followed = sum(r["score"]["config_followed"] for r in subset)
+                    summary.setdefault("config_by_role", {})[f"{change}__{condition}__{task}"] = {
+                        "content": content, "role": subset[0]["score"]["config_role"], "n": len(subset), "followed": followed}
+                    lines.append(f"| {change} | {condition} | {content} | {subset[0]['score']['config_role']} | {task} | {followed}/{len(subset)} |")
     save(output / "summary.json", summary)
     (output / "tables.md").write_text("\n".join(lines) + "\n")
     return summary
@@ -291,7 +341,8 @@ def main() -> int:
             "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
             "git_status": subprocess.check_output(["git", "status", "--short"], cwd=REPO, text=True),
             "worker_system": W.WORKER_SYSTEM, "summarizer_system": C.SUMMARIZER_SYSTEM,
-            "inline_u0": inline_u0_message(), "relays": {c: relay_message(c) for c in CHANGES},
+            "inline_u0": {s: inline_u0_message(s) for s in config.get("sessions", CHANGES)},
+            "relays": {s: relay_message(s) for s in config.get("sessions", CHANGES)}, "sessions": SESSIONS,
             "store_systems": {str(c): store_system(c) for c in (None, *CHANGES)}, "reinserts": {c: reinsert_message(c) for c in CHANGES},
             "tasks": {t: task_message(t) for t in S.TASKS}})
         client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],

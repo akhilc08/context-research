@@ -36,7 +36,8 @@ class Scripted:
         if messages[0]["content"] in (C.SUMMARIZER_SYSTEM, PI.P["SUMMARIZATION_SYSTEM_PROMPT"]):
             self.summaries += 1
             text = messages[1]["content"]
-            kept = [S.RULES[r][v] for r in S.RULES for v in ("v1", "v2") if S.RULES[r][v] in text]
+            # Keep rule texts in the order they last appeared, like a summary that preserves chronology.
+            kept = sorted((S.RULES[r][v] for r in S.RULES for v in ("v1", "v2") if S.RULES[r][v] in text), key=text.rfind)
             if self.drop:
                 kept = [k for k in kept if k not in (S.RULES["changelog"]["v2"], S.RULES["config_values"]["v2"])]
             return reply("Rules: " + " ".join(kept), self.n)
@@ -46,7 +47,11 @@ class Scripted:
         task = next((t for t, spec in S.TASKS.items() if spec["text"] in messages[last]["content"]), None)
         if task is None:
             return reply("Read-only report.", self.n)
-        current = {r: "v2" if S.RULES[r]["v2"] in context else "v1" if S.RULES[r]["v1"] in context else None for r in S.RULES}
+        # Follow whichever version of each rule appears latest in the context.
+        current = {}
+        for r in S.RULES:
+            positions = {v: context.rfind(S.RULES[r][v]) for v in ("v1", "v2")}
+            current[r] = max(positions, key=positions.get) if max(positions.values()) >= 0 else None
         spec = S.TASKS[task]
         writes = []
         if current["config_values"] == "v2":
@@ -131,6 +136,37 @@ class StoreAndReinsertTest(unittest.TestCase):
             self.assertIn(S.RULES["config_values"]["v1"], warm["system"])
             reinsert = json.loads((out / "rep-00/prep/changelog__reinsert_compact/record.json").read_text())
             self.assertEqual(reinsert["final_history"][1]["content"], RC.reinsert_message("changelog"))
+
+
+class AmendmentStatusTest(unittest.TestCase):
+    def test_messages_and_scoring_for_swapped_sessions(self):
+        self.assertIn(S.RULES["config_values"]["v2"], RC.original_rules("changelog_sfirst"))
+        self.assertIn(S.RULES["config_values"]["v1"], RC.amendment("config_reverse"))
+        self.assertIn("rule 2", RC.amendment("config_reverse"))
+        reverse = RC.score(S.FIXTURE, "low_stock", "config_reverse")
+        self.assertEqual((reverse["config_role"], reverse["config_expected"]), ("amended", "v1"))
+        sfirst = RC.score(S.FIXTURE, "low_stock", "changelog_sfirst")
+        self.assertEqual((sfirst["config_role"], sfirst["config_expected"], sfirst["unchanged_rule_expected"]), ("original", "v2", "v2"))
+        self.assertFalse(sfirst["config_followed"])
+
+    def test_caps_limit_sessions_and_conditions(self):
+        config = {"repetitions": 20, "repetition_caps": {"changelog": 10, "relay_no_compact": 5, "changelog:relay_no_compact": 0}}
+        count = lambda s, c: sum(RC.planned(config, s, c, rep) for rep in range(20))
+        self.assertEqual((count("config_reverse", "relay_compact"), count("changelog", "relay_compact"),
+                          count("config_reverse", "relay_no_compact"), count("changelog", "relay_no_compact")), (20, 10, 5, 0))
+
+    def test_all_four_sessions_follow_current_rules(self):
+        config = {**CONFIG, "repetitions": 1, "sessions": list(RC.SESSIONS), "conditions": ["relay_compact"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            RC.execute(Scripted(), out, config)
+            summary = RC.analyze(out)
+            roles = summary["config_by_role"]
+            self.assertEqual(len(roles), 8)
+            self.assertTrue(all(cell["followed"] == cell["n"] == 1 for cell in roles.values()), roles)
+            self.assertEqual(roles["config_reverse__relay_compact__low_stock"]["content"], "config.py")
+            self.assertEqual(roles["changelog_sfirst__relay_compact__low_stock"]["role"], "original")
+            self.assertTrue((out / "rep-00/warmup-v1-v2.json").exists() and (out / "rep-00/warmup.json").exists())
 
 
 if __name__ == "__main__":

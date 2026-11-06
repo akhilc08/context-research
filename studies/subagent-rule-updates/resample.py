@@ -26,14 +26,17 @@ HERE = Path(__file__).resolve().parent
 REPO = next(p for p in HERE.parents if (p / "AGENTS.md").exists())
 
 
-def states(runs: list[Path], conditions: list[str], change: str) -> list[tuple[str, dict]]:
+def states(runs: list[Path], conditions: list[str], change) -> list[tuple[str, dict]]:
+    """change is one session key or a list of them. State IDs name the session when it is not config_values."""
     found = []
-    for run in runs:
-        for condition in conditions:
-            for record_path in sorted(run.glob(f"rep-*/prep/{change}__{condition}/record.json")):
-                record = json.loads(record_path.read_text())
-                if record.get("setup_valid") and "final_history" in record:
-                    found.append((f"{run.parent.name}/{record_path.parts[-4]}/{condition}", record))
+    for session in ([change] if isinstance(change, str) else change):
+        for run in runs:
+            for condition in conditions:
+                for record_path in sorted(run.glob(f"rep-*/prep/{session}__{condition}/record.json")):
+                    record = json.loads(record_path.read_text())
+                    if record.get("setup_valid") and "final_history" in record:
+                        suffix = condition if session == "config_values" else f"{session}:{condition}"
+                        found.append((f"{run.parent.name}/{record_path.parts[-4]}/{suffix}", record))
     return found
 
 
@@ -45,9 +48,11 @@ def execute(client, output: Path, args) -> None:
             workspace = W.Workspace(branchdir / "workspace", S.FIXTURE, branchdir / "tool_events.jsonl")
             result = W.run_worker(client, system, record["final_history"], workspace, RC.task_message(args.task),
                                   tag=f"{state_id}/s{sample}", max_calls=args.max_worker_calls)
-            result.update({"state": state_id, "sample": sample, "task": args.task, "score": RC.score(result["files"], args.task, args.change)})
+            result.update({"state": state_id, "sample": sample, "task": args.task, "session": record["change"],
+                           "score": RC.score(result["files"], args.task, record["change"])})
             RC.save(branchdir / "result.json", result)
-            print(f"SAMPLE {state_id} s{sample} status={result['status']} changed={result['score']['changed_rule_outcome']}", flush=True)
+            print(f"SAMPLE {state_id} s{sample} status={result['status']} changed={result['score']['changed_rule_outcome']} "
+                  f"config_followed={result['score']['config_followed']}", flush=True)
             if result["status"] == "provider_error":
                 raise RuntimeError(f"Stopping after provider error at {branchdir}")
 
@@ -72,7 +77,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--runs", type=Path, nargs="+", default=[])
     parser.add_argument("--condition", nargs="+", default=["relay_compact"])
-    parser.add_argument("--change", default="config_values")
+    parser.add_argument("--change", nargs="+", default=["config_values"], help="One or more session keys")
     parser.add_argument("--task", default="low_stock")
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--max-worker-calls", type=int, default=14)
