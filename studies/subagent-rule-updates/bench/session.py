@@ -159,27 +159,51 @@ class Team:
                 "reply": W.final_text(result["history"]), "manager_calls": len(result["responses"])}
 
 
-def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.PiState], u1: Optional[str]) -> Optional[dict]:
+def threshold(config: dict, name: str) -> int:
+    """Manager history uses manager_compact_threshold_chars when set; the worker uses compact_threshold_chars."""
+    if name == "manager" and config.get("manager_compact_threshold_chars") is not None:
+        return config["manager_compact_threshold_chars"]
+    return config["compact_threshold_chars"]
+
+
+def _summarize(team: Team, name: str, history: List[dict], compactor: str, tag: str,
+               pi_states: Dict[str, PI.PiState]) -> tuple:
+    """Return (history, event, skipped) from one compactor call."""
+    if compactor == "generic":
+        session = SimpleNamespace(history=history)
+        event = C.compact(team.client, session, tag)
+        return session.history, event, False
+    if compactor == "pi":
+        history, event = PI.compact(team.client, history, pi_states.setdefault(name, PI.PiState()), tag)
+        return history, event, event["skipped"]
+    raise ValueError("Unknown compactor: %r" % (compactor,))
+
+
+def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.PiState], u1: Optional[str], *,
+             forced: bool = False) -> Optional[dict]:
+    """Compact one history once it passes its threshold, or unconditionally when forced.
+
+    A forced pi compaction that skips (the tail already fits) falls back to the generic compactor,
+    so the placement's history is always really compacted; the event records forced_generic."""
     history = team.manager_history if name == "manager" else team.worker_history
     chars = len(C.render_history(history))
-    if chars <= team.config["compact_threshold_chars"]:
+    if not forced and chars <= threshold(team.config, name):
         return None
-    tag = "%s/compact/%s/b%d" % (team.tag, name, after_block)
+    tag = "%s/compact/%s/b%d%s" % (team.tag, name, after_block, "/forced" if forced else "")
     compactor = team.config["compactor"]
+    forced_generic = False
     try:
-        if compactor == "generic":
-            session = SimpleNamespace(history=history)
-            event = C.compact(team.client, session, tag)
-            history, skipped = session.history, False
-        elif compactor == "pi":
-            history, event = PI.compact(team.client, history, pi_states.setdefault(name, PI.PiState()), tag)
-            skipped = event["skipped"]
-        else:
-            raise ValueError("Unknown compactor: %r" % (compactor,))
+        new_history, event, skipped = _summarize(team, name, history, compactor, tag, pi_states)
+        if forced and skipped:
+            pi_cut = event.get("cut")
+            new_history, event, skipped = _summarize(team, name, history, "generic", tag + "/generic", pi_states)
+            event["pi_skipped_cut"] = pi_cut
+            forced_generic = True
     except ProviderError:
         raise
     except (RuntimeError, KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         raise CompactionError("%s compaction failed: %s: %s" % (name, type(exc).__name__, exc)) from exc
+    history = new_history
     reinserted = team.cell.condition == "reinsert" and not skipped and u1 is not None
     if reinserted:
         history = history + [{"role": "user", "content": u1}]
@@ -189,22 +213,32 @@ def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.Pi
         team.worker_history = history
     event.update({"history": name, "after_block": after_block, "compactor": compactor, "history_chars_before": chars,
                   "history_chars_after": len(C.render_history(history)), "reinserted": reinserted,
-                  "history_after_hash": H.digest(history)})
+                  "history_after_hash": H.digest(history), "skipped": skipped, "forced": forced,
+                  "forced_generic": forced_generic})
     return event
 
 
-def add_history(team: Team, case: Case, trajectories: Dict[str, Dict[str, Path]], u1: Optional[str]) -> List[dict]:
-    """Append each filler block and compact the placement's histories once they pass the threshold."""
+def add_history(team: Team, case: Case, trajectories: Dict[str, Dict[str, Path]], u1: Optional[str],
+                workdir: str) -> List[dict]:
+    """Append each filler block and compact the placement's histories once they pass their thresholds.
+
+    After the last block, each placement-named history that never had a real compaction is
+    compacted once anyway (forced), so a placement is never a no-op."""
     events: List[dict] = []
     pi_states: Dict[str, PI.PiState] = {}
+    names = PLACEMENT_HISTORIES[team.cell.placement]
     for index, iid in enumerate(case.history):
-        block = filler_block(iid, load_trajectory(trajectories[case.repo][iid]))
+        block = filler_block(iid, load_trajectory(trajectories[case.repo][iid]), workdir=workdir)
         team.manager_history = team.manager_history + copy.deepcopy(block.manager)
         team.worker_history = team.worker_history + copy.deepcopy(block.worker)
-        for name in PLACEMENT_HISTORIES[team.cell.placement]:
+        for name in names:
             event = _compact(team, name, index, pi_states, u1)
             if event is not None:
                 events.append(event)
+    done = {e["history"] for e in events if not e["skipped"]}
+    for name in names:
+        if name not in done:
+            events.append(_compact(team, name, len(case.history) - 1, pi_states, u1, forced=True))
     return events
 
 
@@ -259,8 +293,9 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
     record: Dict[str, Any] = {"case_id": case.case_id, "cell": asdict(cell), "status": "running",
                               "manager_system": MANAGER_SYSTEM, "worker_system": BENCH_WORKER_SYSTEM,
                               "user_turns": texts, "turns": [], "compactions": [], "config": {
-                                  k: config.get(k) for k in ("compact_threshold_chars", "compactor",
-                                                             "max_manager_calls", "max_worker_calls")}}
+                                  k: config.get(k) for k in ("compact_threshold_chars", "manager_compact_threshold_chars",
+                                                             "compactor", "max_manager_calls", "max_worker_calls",
+                                                             "container_network")}}
     status = "finished"
     try:
         ws = workspace_factory(rows[case.first], outdir / "task1")
@@ -272,7 +307,7 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
         if not ok:
             status = _failed(record["turns"][-1])
         else:
-            record["compactions"] = add_history(team, case, trajectories, u1)
+            record["compactions"] = add_history(team, case, trajectories, u1, rows[case.first].workdir)
             if cell.worker_type == "new":
                 record["worker_reset"] = reset_worker(team)
             ws = workspace_factory(rows[case.second], outdir / "task2")
@@ -294,6 +329,7 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
     if status != "finished":
         record.pop("rules", None)
         record.pop("tests", None)
+    record.update(delegation_flags(team.deliveries))
     record.update({"status": status, "deliveries": team.deliveries, "calls": recorder.calls,
                    "manager_system_final": team.manager_system(), "worker_system_final": team.current_worker_system(),
                    "manager_history": team.manager_history, "worker_history": team.worker_history})
@@ -301,9 +337,28 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
     return record
 
 
-def headline_pass(record: dict) -> bool:
+def delegation_flags(deliveries: List[dict]) -> dict:
+    """Whether the manager delegated U0 and U2, and whether the worker finished its last U2 delivery."""
+    u2 = [d for d in deliveries if d["turn"] == "U2"]
+    return {"u0_delegated": any(d["turn"] == "U0" for d in deliveries), "u2_delegated": bool(u2),
+            "u2_worker_finished": bool(u2) and u2[-1]["status"] == "finished"}
+
+
+def _outcomes(record: dict) -> Optional[tuple]:
     rules = record.get("rules") if record.get("status") == "finished" else None
     if not rules:
+        return None
+    return rules["changed"]["outcome"], rules["unchanged"]["outcome"]
+
+
+def headline_pass(record: dict) -> bool:
+    """Changed rule followed in its new version and unchanged rule kept. Not defined for no_change."""
+    if record.get("cell", {}).get("condition") == "no_change":
         return False
-    return rules["changed"]["outcome"] == "new" and rules["unchanged"]["outcome"] == "old"
+    return _outcomes(record) == ("new", "old")
+
+
+def control_pass(record: dict) -> bool:
+    """The no_change control: both rules still followed in their original version."""
+    return record.get("cell", {}).get("condition") == "no_change" and _outcomes(record) == ("old", "old")
 

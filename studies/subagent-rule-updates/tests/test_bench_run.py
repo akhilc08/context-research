@@ -23,9 +23,10 @@ def write(tmp: Path):
 
 
 def rec(path: Path, placement, status="finished", changed="new", unchanged="old", compactions=(), resolved=True, cost=0.5,
-        condition="relay"):
+        condition="relay", flags=(True, True, True)):
     record = {"case_id": "c", "status": status, "cost_usd": cost, "compactions": list(compactions),
               "cell": {"condition": condition, "placement": placement, "worker_type": "existing"}}
+    record.update(zip(("u0_delegated", "u2_delegated", "u2_worker_finished"), flags))
     if status == "finished":
         record["rules"] = {"changed": {"outcome": changed}, "unchanged": {"outcome": unchanged}}
         record["tests"] = {"resolved": resolved}
@@ -172,6 +173,37 @@ class AnalyzeTests(unittest.TestCase):
             self.assertEqual(manager["statuses"], {"finished": 3, "infra_error": 1})
             self.assertEqual((both["setup_invalid"], both["valid_finished"], both["headline_passes"]), (1, 0, 0))
             self.assertEqual(len(manager["setup_invalid_records"]), 2)
+
+    def test_delegation_invalid_excluded_from_headline(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            rec(out / "cells/a/ok", "none")
+            rec(out / "cells/a/no_u0", "none", flags=(False, True, True))
+            rec(out / "cells/a/no_u2", "none", flags=(True, False, False))
+            rec(out / "cells/a/unfinished_u2", "none", flags=(True, True, False))
+            rec(out / "cells/a/missing", "none", flags=())
+            rec(out / "cells/a/err", "none", status="infra_error", flags=(False, False, False))
+            cell = RB.analyze(out)["cells"]["relay__none__existing"]
+            self.assertEqual((cell["delegation_invalid"], cell["valid_finished"], cell["headline_passes"]), (4, 1, 1))
+            self.assertEqual(cell["setup_invalid"], 0)
+            self.assertEqual(sorted(cell["delegation_invalid_records"]),
+                             ["cells/a/missing", "cells/a/no_u0", "cells/a/no_u2", "cells/a/unfinished_u2"])
+            self.assertEqual(cell["changed"]["new"], 1)
+            self.assertIn("delegation_invalid", (out / "tables.md").read_text())
+
+    def test_no_change_reported_as_control_not_headline(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            rec(out / "cells/n/1", "none", condition="no_change", changed="old", unchanged="old")
+            rec(out / "cells/n/2", "none", condition="no_change", changed="new", unchanged="old")
+            rec(out / "cells/r/1", "none", changed="old", unchanged="old")
+            cells = RB.analyze(out)["cells"]
+            control, relay = cells["no_change__none__existing"], cells["relay__none__existing"]
+            self.assertEqual((control["headline_passes"], control["control_passes"]), (0, 1))
+            self.assertEqual((relay["headline_passes"], relay["control_passes"]), (0, 0))
+            tables = (out / "tables.md").read_text()
+            self.assertIn("No-change control", tables)
+            self.assertIn("| no_change__none__existing | 2 | 1 |", tables)
 
     def test_malformed_finished_record_is_counted_not_raised(self):
         with tempfile.TemporaryDirectory() as d:

@@ -19,6 +19,8 @@ STUDY = Path(__file__).resolve().parents[1]
 RULES_DIR = STUDY / "bench" / "rules"
 MANIFEST = STUDY / "bench" / "manifests" / "v1.json"
 PARQUET = Path(os.path.expanduser("~/bench-data/swe-rebench-v2/data/train-00000-of-00001.parquet"))
+HISTORY = Path(os.path.expanduser("~/bench-data/vibemem/history"))
+CONFIG = STUDY / "configs" / "bench-v1.json"
 
 # (repo, rule id) -> a path the old version leaves and a path the new version leaves.
 EXAMPLES = {
@@ -256,6 +258,48 @@ class GoldPatchTests(unittest.TestCase):
                         self.assertEqual(R.classify(r, gold, issue=issue)["outcome"], "neither")
                         self.assertEqual(R.classify(r, example(old_path, gold), issue=issue)["outcome"], "old")
                         self.assertEqual(R.classify(r, example(new_path, gold), issue=issue)["outcome"], "new")
+
+
+class _Summarizer:
+    def complete(self, messages, **kwargs):
+        return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "summary"}}],
+                "usage": {"prompt_tokens": 1}}
+
+
+@unittest.skipUnless(HISTORY.exists(), "VibeMemBench trajectories not available")
+class HistoryCompactionTests(unittest.TestCase):
+    """Under the shipped config, replaying each v1 case's history compacts both the manager and the
+    worker history. Uses the real trajectories and a stub summarizer; no model calls."""
+
+    @classmethod
+    def setUpClass(cls):
+        from bench.sources import trajectory_index
+        cls.trajectories = trajectory_index(HISTORY)
+        cls.config = json.loads(CONFIG.read_text())
+        cls.cases = K.load_manifest(MANIFEST)
+
+    def events(self, case, config):
+        from bench import session as SE
+        from bench.sources import repo_workdir
+        team = SE.Team(SE.RecordingClient(_Summarizer()), SE.Cell("relay", "both", "existing"), case, {}, "t", config)
+        return SE.add_history(team, case, self.trajectories, None, repo_workdir(case.repo))
+
+    def test_both_histories_compact_under_shipped_config(self):
+        self.assertEqual(self.config["compactor"], "generic")
+        self.assertLess(self.config["manager_compact_threshold_chars"], self.config["compact_threshold_chars"])
+        for case in self.cases:
+            with self.subTest(case=case.case_id):
+                events = [e for e in self.events(case, self.config) if not e["skipped"]]
+                self.assertEqual({e["history"] for e in events}, {"manager", "worker-1"})
+                # The shipped thresholds fire on their own; forcing is only a backstop.
+                self.assertFalse([e for e in events if e["forced"]])
+
+    def test_both_histories_compact_with_pi(self):
+        config = {**self.config, "compactor": "pi"}
+        for case in self.cases:
+            with self.subTest(case=case.case_id):
+                events = [e for e in self.events(case, config) if not e["skipped"]]
+                self.assertEqual({e["history"] for e in events}, {"manager", "worker-1"})
 
 
 if __name__ == "__main__":

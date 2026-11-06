@@ -17,6 +17,9 @@ _RETURNCODE = re.compile(r"<returncode>\s*(-?\d+)\s*</returncode>")
 _OUTPUT = re.compile(r"<output>\n?(.*?)</output>", re.S)
 _PR = re.compile(r"<pr_description>\s*(.*?)\s*</pr_description>", re.S)
 _PR_HEADER = "Consider the following PR description:"
+_TESTBED = re.compile(r"/testbed(?![A-Za-z0-9_-])")
+_BAD_ID_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+MAX_CALL_ID = 64
 
 
 def load_trajectory(path: Path) -> List[Dict[str, Any]]:
@@ -44,6 +47,17 @@ def _commands(message: Dict[str, Any]) -> List[Dict[str, Any]]:
         if isinstance(command, str) and command.strip():
             out.append({"id": call.get("id"), "command": command})
     return out
+
+
+def safe_call_id(prefix: str, suffix: str = "") -> str:
+    """A tool-call id in [A-Za-z0-9_-]{1,64}. The suffix (a counter) is kept whole so ids stay unique."""
+    prefix = _BAD_ID_CHARS.sub("_", prefix)[:MAX_CALL_ID - len(suffix)]
+    return (prefix + suffix) or "call"
+
+
+def _rewrite(text: str, workdir: Optional[str]) -> str:
+    """Point the trajectory's /testbed checkout at the case's working directory."""
+    return _TESTBED.sub(workdir, text) if workdir else text
 
 
 def _observation(content: str, max_chars: int) -> str:
@@ -75,7 +89,11 @@ def _split_final(raw: List[Dict[str, Any]]):
     return body[:last], closing
 
 
-def to_worker_messages(raw: List[Dict[str, Any]], *, call_prefix: str, max_output_chars: int = 2000) -> List[Dict[str, Any]]:
+def to_worker_messages(raw: List[Dict[str, Any]], *, call_prefix: str, workdir: Optional[str] = None,
+                       max_output_chars: int = 2000) -> List[Dict[str, Any]]:
+    """Replay a trajectory as worker turns. The first user message is replaced by the bare problem
+    statement, so mini-swe-agent's own instructions (submit protocol, which files to touch) never
+    reach the worker. With workdir, /testbed is rewritten to it in every replayed message."""
     steps, closing = _split_final(raw)
     out: List[Dict[str, Any]] = []
     id_map: Dict[str, str] = {}
@@ -87,13 +105,14 @@ def to_worker_messages(raw: List[Dict[str, Any]], *, call_prefix: str, max_outpu
         role = m["role"]
         if role == "user":
             if not seen_user:
-                out.append({"role": "user", "content": _text(m)})
+                out.append({"role": "user", "content": _rewrite(_problem_statement(raw), workdir)})
                 seen_user = True
         elif role == "assistant":
             cmds = _commands(m)
+            text = _rewrite(_text(m), workdir)
             if not cmds:
-                if _text(m).strip():
-                    out.append({"role": "assistant", "content": _text(m)})
+                if text.strip():
+                    out.append({"role": "assistant", "content": text})
                 continue
             calls = []
             for c in cmds:
@@ -101,21 +120,21 @@ def to_worker_messages(raw: List[Dict[str, Any]], *, call_prefix: str, max_outpu
                     continue
                 replied.discard(c["id"])
                 counter += 1
-                new_id = "%s%d" % (call_prefix, counter)
+                new_id = safe_call_id(call_prefix, str(counter))
                 id_map[c["id"]] = new_id
                 calls.append({"id": new_id, "type": "function", "function": {
-                    "name": RUN_COMMAND, "arguments": json.dumps({"command": c["command"]})}})
+                    "name": RUN_COMMAND, "arguments": json.dumps({"command": _rewrite(c["command"], workdir)})}})
             if not calls:
-                if _text(m).strip():
-                    out.append({"role": "assistant", "content": _text(m)})
+                if text.strip():
+                    out.append({"role": "assistant", "content": text})
                 continue
-            out.append({"role": "assistant", "content": _text(m), "tool_calls": calls})
+            out.append({"role": "assistant", "content": text, "tool_calls": calls})
         elif role == "tool":
             new_id = id_map.pop(m.get("tool_call_id"), None)
             if new_id is not None:
                 out.append({"role": "tool", "tool_call_id": new_id,
-                            "content": _observation(_text(m), max_output_chars)})
-    out.append({"role": "assistant", "content": closing})
+                            "content": _observation(_rewrite(_text(m), workdir), max_output_chars)})
+    out.append({"role": "assistant", "content": _rewrite(closing, workdir)})
     return out
 
 
@@ -149,8 +168,8 @@ def _problem_statement(raw: List[Dict[str, Any]]) -> str:
     return text.strip()
 
 
-def filler_block(instance_id: str, raw: List[Dict[str, Any]]) -> FillerBlock:
-    worker = to_worker_messages(raw, call_prefix="%s-" % instance_id)
+def filler_block(instance_id: str, raw: List[Dict[str, Any]], *, workdir: str) -> FillerBlock:
+    worker = to_worker_messages(raw, call_prefix="%s-" % instance_id, workdir=workdir)
     reply = worker[-1]["content"]
-    manager = manager_block(_problem_statement(raw), reply, "mgr-%s" % instance_id)
+    manager = manager_block(_rewrite(_problem_statement(raw), workdir), reply, safe_call_id("mgr-%s" % instance_id))
     return FillerBlock(instance_id=instance_id, manager=manager, worker=worker)

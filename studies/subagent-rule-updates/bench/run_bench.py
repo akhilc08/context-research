@@ -105,10 +105,19 @@ def setup_invalid(record: dict) -> bool:
     return any(name not in done for name in SE.PLACEMENT_HISTORIES[placement])
 
 
+DELEGATION_FLAGS = ("u0_delegated", "u2_delegated", "u2_worker_finished")
+
+
+def delegation_invalid(record: dict) -> bool:
+    """True when a finished record's manager never delegated U0 or U2, or the U2 worker did not finish."""
+    return record.get("status") == "finished" and not all(record.get(k) is True for k in DELEGATION_FLAGS)
+
+
 def _empty() -> dict:
-    return {"records": 0, "statuses": {}, "setup_invalid": 0, "setup_invalid_records": [], "valid_finished": 0,
+    return {"records": 0, "statuses": {}, "setup_invalid": 0, "setup_invalid_records": [],
+            "delegation_invalid": 0, "delegation_invalid_records": [], "valid_finished": 0,
             "changed": dict.fromkeys(OUTCOMES, 0), "unchanged": dict.fromkeys(OUTCOMES, 0),
-            "headline_passes": 0, "tests_resolved": 0, "cost_usd": 0.0}
+            "headline_passes": 0, "control_passes": 0, "tests_resolved": 0, "cost_usd": 0.0}
 
 
 def analyze(output: Path) -> dict:
@@ -124,13 +133,14 @@ def analyze(output: Path) -> dict:
         row["statuses"][status] = row["statuses"].get(status, 0) + 1
         row["cost_usd"] += float(record.get("cost_usd") or 0.0)
         try:
-            invalid = setup_invalid(record)
-            if not invalid and status == "finished" and record.get("rules"):
+            invalid = {"setup_invalid": setup_invalid(record), "delegation_invalid": delegation_invalid(record)}
+            if not any(invalid.values()) and status == "finished" and record.get("rules"):
                 changed = record["rules"]["changed"]["outcome"]
                 unchanged = record["rules"]["unchanged"]["outcome"]
                 if changed not in OUTCOMES or unchanged not in OUTCOMES:
                     raise KeyError("outcome")
                 passed = int(SE.headline_pass(record))
+                control = int(SE.control_pass(record))
                 resolved = int(bool((record.get("tests") or {}).get("resolved")))
         except (KeyError, TypeError, AttributeError):
             row["statuses"][status] -= 1
@@ -138,16 +148,17 @@ def analyze(output: Path) -> dict:
             if not row["statuses"][status]:
                 del row["statuses"][status]
             continue
-        if invalid:
-            row["setup_invalid"] += 1
-            row["setup_invalid_records"].append(str(path.parent.relative_to(output)))
-            continue
-        if status != "finished" or not record.get("rules"):
+        for kind, flagged in invalid.items():
+            if flagged:
+                row[kind] += 1
+                row[kind + "_records"].append(str(path.parent.relative_to(output)))
+        if any(invalid.values()) or status != "finished" or not record.get("rules"):
             continue
         row["valid_finished"] += 1
         row["changed"][changed] += 1
         row["unchanged"][unchanged] += 1
         row["headline_passes"] += passed
+        row["control_passes"] += control
         row["tests_resolved"] += resolved
     summary = {"cells": cells, "totals": {"records": sum(c["records"] for c in cells.values()),
                                           "cost_usd": sum(c["cost_usd"] for c in cells.values()),
@@ -161,14 +172,24 @@ def render_tables(summary: dict) -> str:
     def fmt(counts: dict) -> str:
         return "/".join(str(counts[o]) for o in OUTCOMES)
     lines = ["Outcome counts are new/old/both/neither over valid finished records. "
-             "setup_invalid records are excluded from them.", "",
-             "| cell | records | statuses | setup_invalid | valid | changed | unchanged | headline | tests | cost USD |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "setup_invalid and delegation_invalid records are excluded from them. "
+             "The no_change control has no headline; see the control table.", "",
+             "| cell | records | statuses | setup_invalid | delegation_invalid | valid | changed | unchanged | headline "
+             "| tests | cost USD |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    control = []
     for cid, c in sorted(summary["cells"].items()):
         statuses = ", ".join("%s %d" % (k, v) for k, v in sorted(c["statuses"].items()))
-        lines.append("| %s | %d | %s | %d | %d | %s | %s | %d | %d | %.4f |" % (
-            cid, c["records"], statuses, c["setup_invalid"], c["valid_finished"], fmt(c["changed"]),
-            fmt(c["unchanged"]), c["headline_passes"], c["tests_resolved"], c["cost_usd"]))
+        is_control = cid.startswith("no_change__")
+        lines.append("| %s | %d | %s | %d | %d | %d | %s | %s | %s | %d | %.4f |" % (
+            cid, c["records"], statuses, c["setup_invalid"], c["delegation_invalid"], c["valid_finished"],
+            fmt(c["changed"]), fmt(c["unchanged"]), "n/a" if is_control else str(c["headline_passes"]),
+            c["tests_resolved"], c["cost_usd"]))
+        if is_control:
+            control.append("| %s | %d | %d |" % (cid, c["valid_finished"], c["control_passes"]))
+    if control:
+        lines += ["", "No-change control: both rules kept in their original version (changed old, unchanged old).", "",
+                  "| cell | valid | both old |", "|---|---|---|"] + control
     return "\n".join(lines) + "\n"
 
 

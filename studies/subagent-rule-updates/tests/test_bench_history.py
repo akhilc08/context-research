@@ -27,6 +27,44 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("Widget cache returns stale", msgs[0]["content"])
         self.assertNotIn("system", [m["role"] for m in msgs])
 
+    def test_first_user_message_is_problem_statement_only(self):
+        """mini-swe-agent's instructions (do not modify tests, submit protocol) would contradict the rules."""
+        msgs = history.to_worker_messages(self.raw, call_prefix="p-")
+        first = msgs[0]["content"]
+        self.assertTrue(first.startswith("Widget cache returns stale entries after reset"))
+        for banned in ("<instructions>", "DO NOT MODIFY", "MODIFY source files", "/testbed",
+                       history.SUBMIT_MARKER, "<pr_description>", "Consider the following PR description"):
+            self.assertNotIn(banned, first)
+        self.assertEqual(sum(m["role"] == "user" for m in msgs), 1)
+
+    def test_testbed_rewritten_to_workdir(self):
+        fb = history.filler_block("inst-1", self.raw, workdir="/widgets")
+        text = json.dumps(fb.worker) + json.dumps(fb.manager)
+        self.assertNotIn("/testbed", text)
+        commands = [json.loads(c["function"]["arguments"])["command"] for c in _calls(fb.worker)]
+        self.assertTrue(commands[0].startswith("cd /widgets && "))
+        raw = [{"role": "user", "content": "t"},
+               {"role": "assistant", "content": "in /testbed now", "tool_calls": [self._call("a", json.dumps(
+                   {"command": "ls /testbed/src /testbed2 /testbedx"}))]},
+               {"role": "tool", "tool_call_id": "a", "content": "<returncode>0</returncode>\n<output>\n/testbed/src/a.py\n</output>"},
+               {"role": "assistant", "content": "fin"}]
+        msgs = history.to_worker_messages(raw, call_prefix="q-", workdir="/r")
+        self.assertEqual(json.loads(msgs[1]["tool_calls"][0]["function"]["arguments"])["command"],
+                         "ls /r/src /testbed2 /testbedx")
+        self.assertEqual(msgs[1]["content"], "in /r now")
+        self.assertEqual(json.loads(msgs[2]["content"])["output"], "/r/src/a.py\n")
+
+    def test_replayed_call_ids_are_sanitized(self):
+        iid = "own.er__re.po-" + "x" * 80 + "-12"
+        fb = history.filler_block(iid, self.raw, workdir="/r")
+        ids = [c["id"] for c in _calls(fb.worker) + _calls(fb.manager)]
+        ids += [m["tool_call_id"] for m in fb.worker + fb.manager if m["role"] == "tool"]
+        self.assertTrue(ids)
+        for i in ids:
+            self.assertRegex(i, r"^[A-Za-z0-9_-]{1,64}$")
+        worker_ids = [c["id"] for c in _calls(fb.worker)]
+        self.assertEqual(len(worker_ids), len(set(worker_ids)))
+
     def test_call_ids_unique_prefixed_and_paired(self):
         msgs = history.to_worker_messages(self.raw, call_prefix="p-")
         calls = _calls(msgs)
@@ -154,7 +192,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(block[3]["content"], "Done.")
 
     def test_filler_block_reply_is_final_assistant_text(self):
-        fb = history.filler_block("inst-1", self.raw)
+        fb = history.filler_block("inst-1", self.raw, workdir="/r")
         self.assertEqual(fb.instance_id, "inst-1")
         closing = fb.worker[-1]["content"]
         reply = json.loads(fb.manager[2]["content"])["reply"]
