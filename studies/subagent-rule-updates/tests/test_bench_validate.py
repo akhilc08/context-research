@@ -246,6 +246,22 @@ class ImageChecksTest(unittest.TestCase):
         self.assertEqual(res["gold_runs_passed"], 1)
         self.assertIn("flaky: gold resolved 1 of 2 runs", res["reason"])
 
+    def test_later_gold_conflict_is_not_a_pass(self):
+        res = validate.validate_task(make_row(), FakeRunner(), "/r", gold_runs=2)
+        self.assertTrue(res["valid"])
+        class LateConflict(FakeRunner):
+            def run(self, args, *, input=None, timeout, max_output=None):
+                if args[:2] == ["docker", "run"] and self.runs == 2:
+                    self.test_conflict = ("gold",)
+                return super().run(args, input=input, timeout=timeout, max_output=max_output)
+        res = validate.validate_task(make_row(), LateConflict(), "/r", gold_runs=2)
+        self.assertFalse(res["valid"])
+        self.assertEqual(res["gold_runs_passed"], 1)
+
+    def test_cli_rejects_zero_gold_runs(self):
+        with self.assertRaises(SystemExit):
+            validate.main(["--manifest", "m", "--data-root", "d", "--output", "o", "--gold-runs", "0"])
+
     def test_gold_run_does_not_reset_test_files(self):
         runner = FakeRunner()
         validate.validate_task(make_row(), runner, "/r")

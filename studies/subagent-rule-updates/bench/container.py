@@ -150,7 +150,8 @@ class ContainerWorkspace:
         network the agent never had. A no-op when scoring_network is unset or the same."""
         if self.container_id is None:
             raise RuntimeError("Container not started")
-        if not self.scoring_network or self.scoring_network == self.network:
+        # No --network means Docker's default bridge network.
+        if not self.scoring_network or self.scoring_network == (self.network or "bridge"):
             return
         steps = ([["docker", "network", "disconnect", self.network, self.container_id]] if self.network else [])
         steps.append(["docker", "network", "connect", self.scoring_network, self.container_id])

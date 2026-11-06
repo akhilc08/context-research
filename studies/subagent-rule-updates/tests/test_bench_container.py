@@ -61,10 +61,13 @@ class ContainerTest(unittest.TestCase):
             ws.open_network()
             self.assertEqual(runner.calls, [])
 
-    def test_open_network_without_starting_network_only_connects(self):
-        ws, runner = make(scoring_network="bridge")
+    def test_open_network_without_starting_network(self):
+        ws, runner = make(scoring_network="bridge")  # already on the default bridge
         ws.open_network()
-        self.assertEqual([c["args"] for c in runner.calls], [["docker", "network", "connect", "bridge", "cid123"]])
+        self.assertEqual(runner.calls, [])
+        ws, runner = make(scoring_network="scoring")
+        ws.open_network()
+        self.assertEqual([c["args"] for c in runner.calls], [["docker", "network", "connect", "scoring", "cid123"]])
 
     def test_open_network_failure_raises(self):
         ws, _ = make(lambda args, input: (1, "", "no such network"), network="none", scoring_network="nope")

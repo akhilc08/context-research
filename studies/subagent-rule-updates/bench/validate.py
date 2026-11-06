@@ -92,6 +92,7 @@ def _base_run(row: TaskRow, runner: Any, workdir: str, result: dict, paths: List
 
 def _gold_run(row: TaskRow, runner: Any, workdir: str, result: dict, network: Optional[str],
               scoring_network: Optional[str]) -> None:
+    result["gold_resolved"] = False  # each repeat must earn its own pass
     ws = ContainerWorkspace(row.image_name, runner, workdir=workdir, network=network, scoring_network=scoring_network)
     ws.start()
     try:
@@ -192,6 +193,8 @@ def main(argv: Any = None) -> int:
     parser.add_argument("--gold-runs", type=int, default=1,
                         help="Fresh gold-patch runs that must all resolve the tests (default 1)")
     args = parser.parse_args(argv)
+    if args.gold_runs < 1:
+        parser.error("--gold-runs must be at least 1")
     from bench.cases import load_manifest
     from bench.run_bench import check_output_path
     from bench.sources import load_rows
