@@ -139,7 +139,11 @@ With one amendment, the two fixes cost about the same: the store's rule block is
 
 After generic compaction, Luna hardcoded the low-stock threshold about half the time from almost every state, so single runs mostly sample a per-state probability. States differ somewhat (permutation test p = 0.02). After pi compaction, failures were concentrated: six states never failed and two always failed (p < 0.001).
 
-The two pi states that always failed both summarized the rule as "For tunable values, use `app.settings.get(NAME, default)`…" and dropped the instruction not to hardcode. Every pi state that never failed kept "do not hardcode" or an imperative "Read each with `app.settings.get`". Under generic compaction, states whose summary dropped "hardcode" failed more often on average (3.2 of 5 against 2.2), with overlap. This pattern was found after the fact in 20 summaries, so it is a hypothesis. Editing only the rule's wording in a fixed summary would test it.
+The two pi states that always failed both summarized the rule as "For tunable values, use `app.settings.get(NAME, default)`…" and dropped the instruction not to hardcode. Every pi state that never failed kept "do not hardcode" or an imperative "Read each with `app.settings.get`". Under generic compaction, states whose summary dropped "hardcode" failed more often on average (3.2 of 5 against 2.2), with overlap. This pattern was found after the fact in 20 summaries, so it is a hypothesis. A later review of the same records weakens it. Seven generic summaries of the original config rule (when the changelog rule was the one amended) also lacked "hardcode", and all seven of those sessions passed the low-stock task. Wording alone does not explain the failures.
+
+Under compaction, the original config rule held on the low-stock task in 18 of 18 branches, while the amended config rule held in 11 of 20 (generic and pi pooled). The two versions differ in content (a constant in `app/config.py` against `app.settings.get`), in timing, and in whether an outdated version sits in the history, so this does not yet show that amendments are more fragile.
+
+A functional audit (`semantic_audit.py`) reran every submitted function with the setting changed. In all 296 scored branches of these runs it agreed with the classifier, and every implementation computed the correct result.
 
 ## Smaller observations
 

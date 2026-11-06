@@ -287,6 +287,6 @@ Evidence. Source code.
 
 Source. https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs
 
-Finding. Codex rebuilds history as a summary plus earlier user messages kept verbatim, newest first, up to 20,000 tokens. pi 1.5.0 keeps the most recent 20,000 tokens verbatim and summarizes the rest with a structured prompt that has a Constraints & Preferences section.
+Finding. Codex rebuilds history as a summary plus earlier user messages kept verbatim, newest first. The budget is 20,000 tokens on the local path used for non-OpenAI providers (`compact.rs`) and 64,000 tokens on the default OpenAI path (`compact_remote_v2.rs`), which also keeps parent-to-child agent messages up to 10,000 tokens each (checked at commit 2497eab, November 6, 2026). A relayed rule change would very likely survive Codex's default compaction. pi 1.5.0 keeps the most recent 20,000 tokens verbatim and summarizes the rest with a structured prompt that has a Constraints & Preferences section.
 
 Limit. Implementation behavior can change between releases.
