@@ -117,8 +117,9 @@ _WRITE_SCRIPT = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
 
 class ContainerWorkspace:
     def __init__(self, image: str, runner: Any, *, workdir: str, event_log: Optional[Path] = None,
-                 command_timeout: int = 120, max_output_chars: int = 10000):
+                 command_timeout: int = 120, max_output_chars: int = 10000, network: Optional[str] = None):
         self.image = image
+        self.network = network  # Passed to docker run --network when set, e.g. "none".
         self.runner = runner
         self.workdir = workdir.rstrip("/")
         self.event_log = event_log
@@ -130,8 +131,8 @@ class ContainerWorkspace:
             event_log.parent.mkdir(parents=True, exist_ok=True)
 
     def start(self) -> None:
-        code, out, err = self.runner.run(["docker", "run", "-d", "--rm", self.image, "sleep", "infinity"],
-                                         timeout=300)
+        args = ["docker", "run", "-d", "--rm"] + (["--network", self.network] if self.network else [])
+        code, out, err = self.runner.run(args + [self.image, "sleep", "infinity"], timeout=300)
         if code != 0 or not out.strip():
             raise RuntimeError("docker run failed (%s): %s" % (code, err.strip()))
         self.container_id = out.strip().splitlines()[-1]

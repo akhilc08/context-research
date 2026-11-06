@@ -1,6 +1,7 @@
 """Offline tests for the rule screening runner. No client is ever built."""
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
@@ -212,6 +213,25 @@ class RunnerTests(unittest.TestCase):
                                 workspace_factory=Factory())
             self.assertIn("provider_error", reason)
             self.assertEqual(len(list((out / "b").rglob("record.json"))), 1)
+
+    def test_execute_stops_after_three_unfinished_in_a_row(self):
+        class Client:
+            def summary(self):
+                return {"budget_committed_usd": 0.0}
+
+        def boom(row, d):
+            raise OSError("no docker")
+
+        plan = [{"case_id": CASE.case_id, "repo": "o/r", "rule_id": "notes", "arm": "none", "repetition": i}
+                for i in range(5)]
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(SB.RB, "load_rule_map", return_value=RULES), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+            out = Path(d)
+            reason = SB.execute(Client(), out, plan, {CASE.case_id: CASE}, CONFIG, rows=ROWS, rules_dir=out,
+                                workspace_factory=boom)
+            self.assertIn("3 consecutive unfinished records (last: infra_error)", reason)
+            self.assertEqual(len(list(out.rglob("record.json"))), 3)
+        self.assertIn("STATUS_COUNTS infra_error=3", printed.getvalue())
 
 
 if __name__ == "__main__":

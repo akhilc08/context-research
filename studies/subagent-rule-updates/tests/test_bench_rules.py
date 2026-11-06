@@ -115,6 +115,15 @@ class LoadTests(unittest.TestCase):
     def test_ok_with_screened(self):
         rules = self.load([self.entry("a", screened=True), self.entry("b")])
         self.assertEqual([r.id for r in rules], ["a", "b"])
+        self.assertEqual([r.screened for r in rules], [True, False])
+
+    def test_repo_prior_read_and_checked(self):
+        rules = self.load([self.entry("a", repo_prior="old"), self.entry("b")])
+        self.assertEqual([r.repo_prior for r in rules], ["old", "none"])
+        with self.assertRaises(ValueError):
+            self.load([self.entry("a", repo_prior="sideways")])
+        with self.assertRaises(ValueError):
+            self.load([self.entry("a", screened="yes")])
 
     def test_duplicate_id(self):
         with self.assertRaises(ValueError):

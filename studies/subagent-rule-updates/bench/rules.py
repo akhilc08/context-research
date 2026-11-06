@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 Changes = Dict[str, Tuple[Optional[str], Optional[str]]]
 
 MATCHER_TYPES = ("new_file", "added_line")
+REPO_PRIORS = ("old", "new", "none")
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,8 @@ class RuleSpec:
     changed: str
     old: dict
     new: dict
+    screened: bool = False  # True once the rule passed evaluation-time screening.
+    repo_prior: str = "none"  # Which version the repository's own files pull an agent toward.
 
 
 def _fill(pattern: str, issue: int) -> str:
@@ -88,7 +91,12 @@ def load_rules(path: Path) -> List[RuleSpec]:
     rules = []
     for e in entries:
         rule = RuleSpec(id=e["id"], repo=e["repo"], original=e["original"],
-                        changed=e["changed"], old=e["old"], new=e["new"])
+                        changed=e["changed"], old=e["old"], new=e["new"],
+                        screened=e.get("screened", False), repo_prior=e.get("repo_prior", "none"))
+        if not isinstance(rule.screened, bool):
+            raise ValueError("rule %s: screened must be true or false" % rule.id)
+        if rule.repo_prior not in REPO_PRIORS:
+            raise ValueError("rule %s: unknown repo_prior %r" % (rule.id, rule.repo_prior))
         if rule.id in seen:
             raise ValueError("duplicate rule id: %s" % rule.id)
         seen.add(rule.id)

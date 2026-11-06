@@ -114,22 +114,30 @@ def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any
             rules_dir: Path, workspace_factory: Any) -> Optional[str]:
     """Run plan entries in order. Returns the stopping reason, or None when the plan completed.
 
-    infra_error is saved and the run continues. provider_error is saved and stops the run."""
+    infra_error is saved and the run continues. provider_error is saved and stops the run. Three
+    unfinished records in a row, of any status, also stop it. Status counts are printed at the end."""
     rule_cache: Dict[str, Any] = {}
-    for entry in plan:
-        case = cases[entry["case_id"]]
-        if case.repo not in rule_cache:
-            rule_cache[case.repo] = RB.load_rule_map(rules_dir, case.repo)
-        outdir = record_dir(model_dir, entry)
-        before = client.summary()["budget_committed_usd"]
-        record = run_one(client, entry, case, rule_cache[case.repo][entry["rule_id"]], rows[case.first],
-                         outdir=outdir, config=config, workspace_factory=workspace_factory)
-        record["cost_usd"] = client.summary()["budget_committed_usd"] - before
-        save(outdir / "record.json", record)
-        if record["status"] == "provider_error":
-            return "provider_error in %s/%s/%s rep%d: %s" % (entry["repo"], entry["rule_id"], entry["arm"],
-                                                             entry["repetition"], record.get("error"))
-    return None
+    streak = RB.FailureStreak()
+    try:
+        for entry in plan:
+            case = cases[entry["case_id"]]
+            if case.repo not in rule_cache:
+                rule_cache[case.repo] = RB.load_rule_map(rules_dir, case.repo)
+            outdir = record_dir(model_dir, entry)
+            before = client.summary()["budget_committed_usd"]
+            record = run_one(client, entry, case, rule_cache[case.repo][entry["rule_id"]], rows[case.first],
+                             outdir=outdir, config=config, workspace_factory=workspace_factory)
+            record["cost_usd"] = client.summary()["budget_committed_usd"] - before
+            save(outdir / "record.json", record)
+            where = "%s/%s/%s rep%d" % (entry["repo"], entry["rule_id"], entry["arm"], entry["repetition"])
+            stop = streak.add(record["status"])
+            if record["status"] == "provider_error":
+                return "provider_error in %s: %s" % (where, record.get("error"))
+            if stop:
+                return "%s, ending at %s" % (stop, where)
+        return None
+    finally:
+        streak.report()
 
 
 def _split(records: List[dict], rule_ids: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, List[dict]]]:
@@ -259,7 +267,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         failure = None
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, rules_dir=rules_dir,
-                              workspace_factory=RB.live_workspace_factory())
+                              workspace_factory=RB.live_workspace_factory(config.get("container_network", "none")))
         finally:
             save(model_dir / "provider_summary.json", client.summary())
             analyze(model_dir, sorted({e["rule_id"] for e in plan}))

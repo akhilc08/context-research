@@ -1,6 +1,9 @@
 """Offline tests for the benchmark runner and analysis. No client is ever built."""
 from __future__ import annotations
 
+import contextlib
+import dataclasses
+import io
 import json
 import tempfile
 import unittest
@@ -10,10 +13,14 @@ from unittest import mock
 from bench import run_bench as RB
 from bench import session as SE
 from bench.cases import Case, save_manifest
+from tests.test_bench_session import NOTES, TAGS, row as task_row
 
 CASES = [Case("o__r--a", "o/r", "o__r-1", "o__r-2", ("h1",), "notes", "tags"),
          Case("o__r--b", "o/r", "o__r-3", "o__r-4", ("h2",), "tags", "notes")]
 CONFIG = {"repetitions": 2, "order_seed": 7, "models": [{"id": "m", "provider": "p", "budget_usd": 1}]}
+UNSCREENED = {r.id: r for r in (NOTES, TAGS)}
+SCREENED = {r.id: dataclasses.replace(r, screened=True) for r in (NOTES, TAGS)}
+ROWS = {i: task_row(i, "Fix bug.") for i in ("o__r-1", "o__r-2", "o__r-3", "o__r-4")}
 
 
 def write(tmp: Path):
@@ -64,7 +71,7 @@ class RunnerTests(unittest.TestCase):
             (data / RB.PARQUET).write_text("")
             (data / RB.HISTORY_DIR).mkdir(parents=True)
             CONFIG["data_root"] = str(data)
-            args = write(tmp) + ["--output", str(tmp / "out"), "--live"]
+            args = write(tmp) + ["--output", str(tmp / "out"), "--live", "--allow-unvalidated"]
             with mock.patch.object(RB, "STUDY", tmp):
                 with self.assertRaises(SystemExit) as cm:
                     RB.main(args)
@@ -73,24 +80,111 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse((tmp / "out" / "model-0").exists())
             CONFIG.pop("data_root")
 
+    def live(self, tmp: Path, extra, *, rules=SCREENED, images_missing=(), freeze=None, execute=None):
+        """Run main --live with data, rows, rules, Docker and the client mocked. Returns (client mock, exit)."""
+        data = tmp / "data"
+        (data / RB.PARQUET).parent.mkdir(parents=True, exist_ok=True)
+        (data / RB.PARQUET).write_text("")
+        (data / RB.HISTORY_DIR).mkdir(parents=True, exist_ok=True)
+        (tmp / "config.json").write_text(json.dumps({**CONFIG, "data_root": str(data), "max_provider_calls": 1,
+                                                     "temperature": 0, "max_output_tokens": 1,
+                                                     "reasoning_effort": "low", "container_network": "none"}))
+        save_manifest(CASES, tmp / "cases.json")
+        args = ["--config", str(tmp / "config.json"), "--manifest", str(tmp / "cases.json"),
+                "--output", str(tmp / "out"), "--live"] + extra
+        patches = [mock.patch("provider.OpenRouterClient"), mock.patch("provider.load_key"),
+                   mock.patch("bench.sources.load_rows", return_value=list(ROWS.values())),
+                   mock.patch("bench.sources.trajectory_index", return_value={}),
+                   mock.patch.object(RB, "load_rule_map", return_value=rules),
+                   mock.patch.object(RB, "missing_images", return_value=list(images_missing)),
+                   mock.patch.object(RB, "execute", side_effect=execute or (lambda *a, **k: None))]
+        if freeze is not None:
+            patches.append(mock.patch.object(RB, "freeze", side_effect=freeze))
+        with contextlib.ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in patches]
+            mocks[0].return_value.summary.return_value = {"budget_committed_usd": 0.0}
+            try:
+                code = RB.main(args)
+            except SystemExit as exc:
+                code = exc
+            return mocks[0], mocks[5], code
+
     def test_failed_freeze_removes_model_dir(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch("provider.OpenRouterClient") as client, \
-                mock.patch("provider.load_key"), mock.patch("bench.sources.load_rows", return_value=[]), \
-                mock.patch("bench.sources.trajectory_index", return_value={}), \
-                mock.patch.object(RB, "load_rule_map", return_value={}), \
-                mock.patch.object(RB, "freeze", side_effect=RuntimeError("boom")):
+        with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            data = tmp / "data"
-            (data / RB.PARQUET).parent.mkdir(parents=True)
-            (data / RB.PARQUET).write_text("")
-            (data / RB.HISTORY_DIR).mkdir(parents=True)
-            CONFIG["data_root"] = str(data)
-            args = write(tmp) + ["--output", str(tmp / "out"), "--live"]
             with self.assertRaises(RuntimeError):
-                RB.main(args)
-            CONFIG.pop("data_root")
+                self.live(tmp, ["--allow-unvalidated"], freeze=RuntimeError("boom"))
+            self.assertFalse((tmp / "out" / "model-0").exists())
+
+    def test_live_needs_validation_or_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            client, _, code = self.live(tmp, [])
+            self.assertIn("--validation", str(code))
             client.assert_not_called()
             self.assertFalse((tmp / "out" / "model-0").exists())
+
+    def test_live_needs_screened_rules_or_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            client, _, code = self.live(tmp, ["--allow-unvalidated"], rules=UNSCREENED)
+            self.assertIn("Unscreened rules: o/r:notes, o/r:tags", str(code))
+            client.assert_not_called()
+            self.assertFalse((tmp / "out" / "model-0").exists())
+            client, _, code = self.live(tmp, ["--allow-unvalidated", "--allow-unscreened"], rules=UNSCREENED)
+            self.assertEqual(code, 0)
+            client.assert_called_once()
+            gates = json.loads((tmp / "out/model-0/manifest.json").read_text())["gates"]
+            self.assertEqual(gates, {"validation": None, "dropped_cases": [], "allow_unvalidated": True,
+                                     "allow_unscreened": True, "unscreened_rules": ["o/r:notes", "o/r:tags"]})
+
+    def test_validation_filters_cases_and_is_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            (tmp / "validation.json").write_text(json.dumps({"valid_ids": ["o__r-1", "o__r-2", "o__r-3"]}))
+            seen = []
+            client, _, code = self.live(tmp, ["--validation", str(tmp / "validation.json")],
+                                        execute=lambda c, m, plan, *a, **k: seen.extend(plan))
+            self.assertEqual(code, 0)
+            self.assertEqual({e["case_id"] for e in seen}, {"o__r--a"})
+            manifest = json.loads((tmp / "out/model-0/manifest.json").read_text())
+            self.assertEqual(manifest["gates"]["dropped_cases"], ["o__r--b"])
+            self.assertEqual(manifest["gates"]["validation"], str(tmp / "validation.json"))
+            self.assertFalse(manifest["gates"]["allow_unvalidated"])
+
+    def test_validation_dropping_every_case_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            (tmp / "v.json").write_text(json.dumps({"valid_ids": []}))
+            with self.assertRaises(SystemExit) as cm:
+                RB.main(write(tmp) + ["--output", str(tmp / "out"), "--validation", str(tmp / "v.json")])
+            self.assertIn("No selected case", str(cm.exception))
+
+    def test_missing_docker_image_stops_before_client(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            client, preflight, code = self.live(tmp, ["--allow-unvalidated"], images_missing=["img:o__r-2"])
+            self.assertIn("Missing Docker images: img:o__r-2", str(code))
+            client.assert_not_called()
+            self.assertFalse((tmp / "out" / "model-0").exists())
+            self.assertEqual(preflight.call_args[0][0], ["img:o__r-1", "img:o__r-2", "img:o__r-3", "img:o__r-4"])
+
+    def test_missing_images_uses_docker_image_inspect(self):
+        class Runner:
+            calls = []
+
+            def run(self, args, *, input=None, timeout, max_output=None):
+                self.calls.append(args)
+                return (1, "", "No such image") if args[-1] == "b" else (0, "[]", "")
+
+        runner = Runner()
+        self.assertEqual(RB.missing_images(["a", "b"], runner), ["b"])
+        self.assertEqual(runner.calls, [["docker", "image", "inspect", "a"], ["docker", "image", "inspect", "b"]])
+
+    def test_live_workspace_factory_sets_network(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = RB.live_workspace_factory("none")(task_row("o__r-1", "x"), Path(d))
+            self.assertEqual(ws.network, "none")
 
     def test_resume_flag_removed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -138,6 +232,30 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(seen), 3)
             self.assertIn("provider_error", reason)
             self.assertTrue((Path(d) / "cells/o__r--a/relay__none__existing/rep2/record.json").exists())
+
+    def test_execute_stops_after_three_unfinished_in_a_row(self):
+        statuses = iter(["infra_error", "finished", "infra_error", "manager_call_limit", "compaction_error",
+                         "finished"])
+        seen = []
+
+        class Client:
+            def summary(self):
+                return {"budget_committed_usd": 1.0}
+
+        def fake(client, case, cell, **kw):
+            seen.append(case.case_id)
+            return {"status": next(statuses), "cell": {}}
+
+        plan = [{"case_id": "o__r--a", "cell_id": "relay__none__existing", "repetition": i} for i in range(6)]
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(SE, "run_cell", fake), \
+                mock.patch.object(RB, "load_rule_map", return_value={}), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            reason = RB.execute(Client(), Path(d), plan, {c.case_id: c for c in CASES}, {}, rows={}, trajectories={},
+                                rules_dir=Path(d), workspace_factory=None)
+        self.assertEqual(len(seen), 5)
+        self.assertIn("3 consecutive unfinished records (last: compaction_error)", reason)
+        self.assertIn("rep4", reason)
+        self.assertIn("STATUS_COUNTS compaction_error=1 finished=1 infra_error=2 manager_call_limit=1", out.getvalue())
 
 
 class AnalyzeTests(unittest.TestCase):

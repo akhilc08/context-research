@@ -30,6 +30,7 @@ PARQUET = "swe-rebench-v2/data/train-00000-of-00001.parquet"
 HISTORY_DIR = "vibemem/history"
 OUTCOMES = ("new", "old", "both", "neither")
 BY_ID = {SE.cell_id(c): c for c in SE.CELLS}
+MAX_CONSECUTIVE_UNFINISHED = 3
 
 
 def check_output_path(output: Path) -> Path:
@@ -71,29 +72,56 @@ def load_rule_map(rules_dir: Path, repo: str) -> Dict[str, Any]:
     return {r.id: r for r in load_rules(rules_dir / ("%s.json" % repo.replace("/", "__")))}
 
 
+class FailureStreak:
+    """Counts statuses and stops a run after MAX_CONSECUTIVE_UNFINISHED unfinished records in a row."""
+
+    def __init__(self):
+        self.counts: Counter = Counter()
+        self.streak = 0
+
+    def add(self, status: str) -> Optional[str]:
+        self.counts[status] += 1
+        self.streak = 0 if status == "finished" else self.streak + 1
+        if self.streak >= MAX_CONSECUTIVE_UNFINISHED:
+            return "%d consecutive unfinished records (last: %s)" % (self.streak, status)
+        return None
+
+    def report(self) -> None:
+        print("STATUS_COUNTS " + " ".join("%s=%d" % kv for kv in sorted(self.counts.items())), flush=True)
+
+
 def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any], config: dict, *, rows: dict,
             trajectories: dict, rules_dir: Path, workspace_factory: Any) -> Optional[str]:
     """Run plan entries in order. Returns the stopping reason, or None when the plan completed.
 
     infra_error and compaction_error records are saved and the run continues. provider_error
-    is saved and stops the run, since a failed request may mean budget or billing trouble.
+    is saved and stops the run, since a failed request may mean budget or billing trouble. Three
+    unfinished records in a row, of any status, also stop it. Status counts are printed at the end.
     """
     rule_cache: Dict[str, Any] = {}
-    for entry in plan:
-        outdir = record_dir(model_dir, entry)
-        case = cases[entry["case_id"]]
-        if case.repo not in rule_cache:
-            rule_cache[case.repo] = load_rule_map(rules_dir, case.repo)
-        before = client.summary()["budget_committed_usd"]
-        record = SE.run_cell(client, case, BY_ID[entry["cell_id"]], rules=rule_cache[case.repo], rows=rows,
-                             trajectories=trajectories, outdir=outdir, config=config, workspace_factory=workspace_factory)
-        record["repetition"] = entry["repetition"]
-        record["cost_usd"] = client.summary()["budget_committed_usd"] - before
-        save(outdir / "record.json", record)
-        if record["status"] == "provider_error":
-            return "provider_error in %s/%s rep%d: %s" % (entry["case_id"], entry["cell_id"], entry["repetition"],
-                                                          record.get("error"))
-    return None
+    streak = FailureStreak()
+    try:
+        for entry in plan:
+            outdir = record_dir(model_dir, entry)
+            case = cases[entry["case_id"]]
+            if case.repo not in rule_cache:
+                rule_cache[case.repo] = load_rule_map(rules_dir, case.repo)
+            before = client.summary()["budget_committed_usd"]
+            record = SE.run_cell(client, case, BY_ID[entry["cell_id"]], rules=rule_cache[case.repo], rows=rows,
+                                 trajectories=trajectories, outdir=outdir, config=config,
+                                 workspace_factory=workspace_factory)
+            record["repetition"] = entry["repetition"]
+            record["cost_usd"] = client.summary()["budget_committed_usd"] - before
+            save(outdir / "record.json", record)
+            where = "%s/%s rep%d" % (entry["case_id"], entry["cell_id"], entry["repetition"])
+            stop = streak.add(record["status"])
+            if record["status"] == "provider_error":
+                return "provider_error in %s: %s" % (where, record.get("error"))
+            if stop:
+                return "%s, ending at %s" % (stop, where)
+        return None
+    finally:
+        streak.report()
 
 
 def setup_invalid(record: dict) -> bool:
@@ -193,7 +221,8 @@ def render_tables(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def freeze(model_dir: Path, config: dict, selected: dict, config_path: Path, plan: List[dict]) -> None:
+def freeze(model_dir: Path, config: dict, selected: dict, config_path: Path, plan: List[dict],
+           gates: Optional[dict] = None) -> None:
     source = model_dir / "source"
     source.mkdir(parents=True, exist_ok=True)
     for path in sorted(STUDY.glob("bench/*.py")) + [STUDY / n for n in ("worker.py", "relay.py", "compaction.py",
@@ -206,13 +235,47 @@ def freeze(model_dir: Path, config: dict, selected: dict, config_path: Path, pla
         "started_utc": datetime.now(timezone.utc).isoformat(), "config": config, "selected_model": selected,
         "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], cwd=REPO, text=True),
-        "manager_system": SE.MANAGER_SYSTEM, "worker_system": SE.BENCH_WORKER_SYSTEM, "planned_runs": len(plan)})
+        "manager_system": SE.MANAGER_SYSTEM, "worker_system": SE.BENCH_WORKER_SYSTEM, "planned_runs": len(plan),
+        "gates": gates or {}})
 
 
-def live_workspace_factory():
+def live_workspace_factory(network: Optional[str] = "none"):
     from bench.container import ContainerWorkspace, DockerRunner
     return lambda row, d: ContainerWorkspace(row.image_name, DockerRunner(), workdir=row.workdir,
-                                             event_log=d / "tool_events.jsonl")
+                                             event_log=d / "tool_events.jsonl", network=network)
+
+
+def missing_images(images: List[str], runner: Any = None) -> List[str]:
+    """Images that `docker image inspect` cannot find locally."""
+    if runner is None:
+        from bench.container import DockerRunner
+        runner = DockerRunner()
+    return [i for i in images if runner.run(["docker", "image", "inspect", i], timeout=60, max_output=2000)[0] != 0]
+
+
+def validated_cases(case_ids: List[str], cases: Dict[str, Any], validation: Path) -> tuple:
+    """(kept, dropped) case ids: a case is kept when both of its tasks are in validation.json's valid_ids."""
+    try:
+        valid = set(json.loads(Path(validation).read_text())["valid_ids"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit("Cannot read validation file %s: %s: %s" % (validation, type(exc).__name__, exc))
+    kept = [c for c in case_ids if cases[c].first in valid and cases[c].second in valid]
+    return kept, [c for c in case_ids if c not in kept]
+
+
+def unscreened_rules(plan: List[dict], cases: Dict[str, Any], rules_dir: Path) -> List[str]:
+    """repo:rule ids used by the plan whose rule file does not mark them screened. Raises SystemExit on bad rules."""
+    out = set()
+    try:
+        for cid in sorted({e["case_id"] for e in plan}):
+            case = cases[cid]
+            rule_map = load_rule_map(rules_dir, case.repo)
+            for rid in (case.changed_rule, case.unchanged_rule):
+                if not rule_map[rid].screened:
+                    out.add("%s:%s" % (case.repo, rid))
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit("Cannot load rules: %s: %s" % (type(exc).__name__, exc))
+    return sorted(out)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -224,15 +287,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--cases", help="Comma list of case ids")
     parser.add_argument("--model-index", type=int, default=0)
     parser.add_argument("--live", action="store_true", help="Authorize paid provider calls")
+    parser.add_argument("--validation", type=Path, help="validation.json from bench/validate.py; keeps only valid cases")
+    parser.add_argument("--allow-unvalidated", action="store_true", help="Run --live without a validation file")
+    parser.add_argument("--allow-unscreened", action="store_true", help="Run --live with rules not marked screened")
     args = parser.parse_args(argv)
     root = check_output_path(args.output)
     config = json.loads(args.config.read_text())
     cases = {c.case_id: c for c in load_manifest(args.manifest)}
-    plan = build_plan(config, select(args.cases, sorted(cases), "case ids"), select(args.cells, sorted(BY_ID), "cell ids"))
+    case_ids = select(args.cases, sorted(cases), "case ids")
+    dropped: List[str] = []
+    if args.validation:
+        case_ids, dropped = validated_cases(case_ids, cases, args.validation)
+        if not case_ids:
+            raise SystemExit("No selected case has both tasks in %s" % args.validation)
+    plan = build_plan(config, case_ids, select(args.cells, sorted(BY_ID), "cell ids"))
     if not args.live:
         save(root / "plan.json", {"order_seed": config["order_seed"], "entries": plan})
         print("PLAN_WRITTEN entries=%d path=%s (no model calls made)" % (len(plan), root / "plan.json"))
         return 0
+    if not args.validation and not args.allow_unvalidated:
+        raise SystemExit("--live needs --validation <validation.json> or --allow-unvalidated")
     selected = config["models"][args.model_index]
     model_dir = root / ("model-%d" % args.model_index)
     if model_dir.exists():
@@ -243,15 +317,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not path.exists():
             raise SystemExit("Missing data path: %s" % path)
     rules_dir = STUDY / "bench/rules"
-    try:
-        for repo in sorted({cases[e["case_id"]].repo for e in plan}):
-            load_rule_map(rules_dir, repo)
-    except (OSError, ValueError, KeyError) as exc:
-        raise SystemExit("Cannot load rules: %s: %s" % (type(exc).__name__, exc))
+    unscreened = unscreened_rules(plan, cases, rules_dir)
+    if unscreened and not args.allow_unscreened:
+        raise SystemExit("Unscreened rules: %s. Screen them or pass --allow-unscreened." % ", ".join(unscreened))
     from bench.sources import load_rows, trajectory_index
     from provider import OpenRouterClient, load_key
     rows = {r.instance_id: r for r in load_rows(data_root / PARQUET)}
+    tasks = sorted({t for e in plan for t in (cases[e["case_id"]].first, cases[e["case_id"]].second)})
+    if set(tasks) - set(rows):
+        raise SystemExit("Missing task rows: %s" % ", ".join(sorted(set(tasks) - set(rows))))
+    absent = missing_images(sorted({rows[t].image_name for t in tasks}))
+    if absent:
+        raise SystemExit("Missing Docker images: %s" % ", ".join(absent))
     trajectories = trajectory_index(data_root / HISTORY_DIR)
+    gates = {"validation": str(args.validation) if args.validation else None, "dropped_cases": dropped,
+             "allow_unvalidated": args.allow_unvalidated, "allow_unscreened": args.allow_unscreened,
+             "unscreened_rules": unscreened}
     load_key()
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".run.lock").open("a") as lock:
@@ -260,7 +341,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit("Refusing existing output directory %s" % model_dir)
         model_dir.mkdir()
         try:
-            freeze(model_dir, config, selected, args.config, plan)
+            freeze(model_dir, config, selected, args.config, plan, gates)
             save(model_dir / "plan.json", {"order_seed": config["order_seed"], "entries": plan})
         except BaseException:
             shutil.rmtree(model_dir, ignore_errors=True)
@@ -272,7 +353,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         failure = None
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, trajectories=trajectories,
-                              rules_dir=rules_dir, workspace_factory=live_workspace_factory())
+                              rules_dir=rules_dir,
+                              workspace_factory=live_workspace_factory(config.get("container_network", "none")))
         finally:
             save(model_dir / "provider_summary.json", client.summary())
             analyze(model_dir)
