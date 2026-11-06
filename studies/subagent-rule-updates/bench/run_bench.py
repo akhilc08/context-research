@@ -145,7 +145,8 @@ def _empty() -> dict:
     return {"records": 0, "statuses": {}, "setup_invalid": 0, "setup_invalid_records": [],
             "delegation_invalid": 0, "delegation_invalid_records": [], "valid_finished": 0,
             "changed": dict.fromkeys(OUTCOMES, 0), "unchanged": dict.fromkeys(OUTCOMES, 0),
-            "headline_passes": 0, "control_passes": 0, "tests_resolved": 0, "cost_usd": 0.0}
+            "headline_passes": 0, "control_passes": 0, "tests_resolved": 0, "cost_usd": 0.0,
+            "by_changed_prior": {}}
 
 
 def analyze(output: Path) -> dict:
@@ -188,6 +189,11 @@ def analyze(output: Path) -> dict:
         row["headline_passes"] += passed
         row["control_passes"] += control
         row["tests_resolved"] += resolved
+        # The repository's own files can pull toward one version; analysis reports the headline per prior.
+        prior = row["by_changed_prior"].setdefault(record["rules"]["changed"].get("repo_prior", "unknown"),
+                                                   {"valid_finished": 0, "headline_passes": 0})
+        prior["valid_finished"] += 1
+        prior["headline_passes"] += passed
     summary = {"cells": cells, "totals": {"records": sum(c["records"] for c in cells.values()),
                                           "cost_usd": sum(c["cost_usd"] for c in cells.values()),
                                           "statuses": dict(sum((Counter(c["statuses"]) for c in cells.values()), Counter()))}}
@@ -215,6 +221,17 @@ def render_tables(summary: dict) -> str:
             c["tests_resolved"], c["cost_usd"]))
         if is_control:
             control.append("| %s | %d | %d |" % (cid, c["valid_finished"], c["control_passes"]))
+    priors = sorted({p for c in summary["cells"].values() for p in c.get("by_changed_prior", {})})
+    if priors:
+        lines += ["", "Headline passes / valid records, split by the changed rule's repo_prior (which version the "
+                  "repository's own files favor).", "",
+                  "| cell | " + " | ".join(priors) + " |", "|---|" + "---|" * len(priors)]
+        for cid, c in sorted(summary["cells"].items()):
+            if cid.startswith("no_change__"):
+                continue
+            by = c.get("by_changed_prior", {})
+            lines.append("| %s | %s |" % (cid, " | ".join(
+                "%d/%d" % (by[p]["headline_passes"], by[p]["valid_finished"]) if p in by else "-" for p in priors)))
     if control:
         lines += ["", "No-change control: both rules kept in their original version (changed old, unchanged old).", "",
                   "| cell | valid | both old |", "|---|---|---|"] + control

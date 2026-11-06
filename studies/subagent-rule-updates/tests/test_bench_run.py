@@ -30,12 +30,14 @@ def write(tmp: Path):
 
 
 def rec(path: Path, placement, status="finished", changed="new", unchanged="old", compactions=(), resolved=True, cost=0.5,
-        condition="relay", flags=(True, True, True)):
+        condition="relay", flags=(True, True, True), prior=None):
     record = {"case_id": "c", "status": status, "cost_usd": cost, "compactions": list(compactions),
               "cell": {"condition": condition, "placement": placement, "worker_type": "existing"}}
     record.update(zip(("u0_delegated", "u2_delegated", "u2_worker_finished"), flags))
     if status == "finished":
         record["rules"] = {"changed": {"outcome": changed}, "unchanged": {"outcome": unchanged}}
+        if prior:
+            record["rules"]["changed"]["repo_prior"] = prior
         record["tests"] = {"resolved": resolved}
     path.mkdir(parents=True)
     (path / "record.json").write_text(json.dumps(record))
@@ -330,6 +332,20 @@ class AnalyzeTests(unittest.TestCase):
             tables = (out / "tables.md").read_text()
             self.assertIn("No-change control", tables)
             self.assertIn("| no_change__none__existing | 2 | 1 |", tables)
+
+    def test_headline_split_by_changed_rule_prior(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            rec(out / "cells/a/1", "none", prior="old")
+            rec(out / "cells/a/2", "none", prior="old", changed="old")
+            rec(out / "cells/a/3", "none", prior="new")
+            rec(out / "cells/a/4", "none")
+            rec(out / "cells/a/5", "none", prior="old", flags=(False, True, True))
+            cell = RB.analyze(out)["cells"]["relay__none__existing"]
+            self.assertEqual(cell["by_changed_prior"], {"old": {"valid_finished": 2, "headline_passes": 1},
+                                                        "new": {"valid_finished": 1, "headline_passes": 1},
+                                                        "unknown": {"valid_finished": 1, "headline_passes": 1}})
+            self.assertIn("| relay__none__existing | 1/1 | 1/2 | 1/1 |", (out / "tables.md").read_text())
 
     def test_malformed_finished_record_is_counted_not_raised(self):
         with tempfile.TemporaryDirectory() as d:

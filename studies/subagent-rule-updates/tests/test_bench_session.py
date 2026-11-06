@@ -222,6 +222,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(record["rules"]["unchanged"]["outcome"], "old")
         self.assertTrue(SE.headline_pass(record))
         self.assertTrue(record["tests"]["resolved"])
+        self.assertEqual(record["rules"]["changed"]["repo_prior"], RULES[CASE.changed_rule].repo_prior)
         self.assertEqual([r.started for r in factory.runners], [1, 1])
         self.assertEqual([r.removed for r in factory.runners], [1, 1])
         # Fillers were appended to both histories.

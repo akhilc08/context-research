@@ -254,8 +254,8 @@ def reset_worker(team: Team) -> dict:
 def score(ws: ContainerWorkspace, case: Case, rules: Dict[str, RuleSpec], row: TaskRow) -> dict:
     changes = ws.changes(row.base_commit, exclude=frozenset(test_patch_paths(row.test_patch)))
     issue = issue_number(row.instance_id)
-    outcomes = {"changed": {"rule": case.changed_rule, **classify(rules[case.changed_rule], changes, issue=issue)},
-                "unchanged": {"rule": case.unchanged_rule, **classify(rules[case.unchanged_rule], changes, issue=issue)}}
+    outcomes = {kind: {"rule": rid, "repo_prior": rules[rid].repo_prior, **classify(rules[rid], changes, issue=issue)}
+                for kind, rid in (("changed", case.changed_rule), ("unchanged", case.unchanged_rule))}
     ws.open_network()
     return {"rules": outcomes, "changed_paths": sorted(changes), "tests": score_tests(ws, row)}
 
