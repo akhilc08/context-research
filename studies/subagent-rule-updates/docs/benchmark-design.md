@@ -4,7 +4,9 @@ This is a design for a benchmark, not a completed study. The benchmark is now bu
 
 ## Why
 
-The current study shows two failures on a toy repository: a stale rule can beat a relayed change after compaction, and a rule can stay in the summary but stop being applied. Every result so far comes from one hand-written fixture, two rules, and synthetic filler history. A reviewer's first question will be whether this happens on real coding work.
+The current study (`FINDINGS.md`) shows on a toy repository that a rule can stay in the compaction summary but stop being applied. This depends on the rule's content, not on whether it was changed mid-session. A rule about where to write a change note never failed after compaction. A rule about how code is written (read a tunable value with `app.settings.get`) failed in 56% to 75% of compacted states, as an original rule and as an amendment, and delivering the rules outside the summary removed the failures (sections 6 to 9). An earlier result, that a stale rule can beat a relayed change after compaction, came from a stale rule in the system prompt and is expected instruction-hierarchy behavior (section 3).
+
+Every result so far comes from one hand-written fixture, two rules, and synthetic filler history. A reviewer's first question will be whether this happens on real coding work. The study's results also mean the benchmark needs rules about how code is written, not only where notes go. Otherwise the rules may never fail and the delivery methods cannot be told apart.
 
 No published benchmark measures this. Existing benchmarks cover rule loss under compaction for a single agent (Governance Decay's ConstraintRot, not released), goal changes for a single agent (InterventionBench), or manager-subagent delegation without instruction changes (ClawArena-Team). None combine a rule change, persistent workers, and compaction.
 

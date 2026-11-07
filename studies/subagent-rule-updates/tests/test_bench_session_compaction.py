@@ -60,6 +60,16 @@ class ThresholdTests(SessionTest):
             has_summary = any((m.get("content") or "").startswith(C.SUMMARY_PREFIX) for m in u2)
             self.assertEqual(has_summary, "manager" in names, placement)
 
+    def test_compaction_records_summary_rule_mentions(self):
+        config = {**CONFIG, "compact_threshold_chars": NEVER, "manager_compact_threshold_chars": NEVER}
+        record, _, _ = self.run_cell(SE.Cell("relay", "both", "existing"), config=config)
+        for e in record["compactions"]:
+            mentions = e["summary_rule_mentions"]
+            self.assertEqual(set(mentions), {"changed", "unchanged"})
+            self.assertEqual(set(mentions["changed"]), {"old", "new"})
+            expected = SE.rule_mentions(e["summary"], CASE, RULES)
+            self.assertEqual(mentions, expected)
+
     def test_forced_compaction_reinserts_u1(self):
         u1 = SE.user_turns(CASE, RULES, ROWS)[1]
         config = {**CONFIG, "compact_threshold_chars": NEVER, "manager_compact_threshold_chars": NEVER}

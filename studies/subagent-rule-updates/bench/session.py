@@ -223,6 +223,10 @@ def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.Pi
                   "history_chars_after": len(C.render_history(history)), "reinserted": reinserted,
                   "history_after_hash": H.digest(history), "skipped": skipped, "forced": forced,
                   "forced_generic": forced_generic})
+    # Whether the summary still names each rule version. In the controlled study, rules were often kept in
+    # the summary and still not applied, so retention and compliance are recorded separately.
+    if not skipped:
+        event["summary_rule_mentions"] = rule_mentions(event.get("summary") or "", team.case, team.rules)
     return event
 
 
