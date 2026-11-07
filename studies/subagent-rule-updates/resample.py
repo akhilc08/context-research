@@ -41,7 +41,10 @@ def states(runs: list[Path], conditions: list[str], change) -> list[tuple[str, d
 
 
 def execute(client, output: Path, args) -> None:
+    import re
     for state_id, record in states(args.runs, args.condition, args.change):
+        if args.state_filter and not re.search(args.state_filter, state_id):
+            continue
         system = record.get("system", W.WORKER_SYSTEM)
         for sample in range(args.samples):
             branchdir = output / "samples" / state_id.replace("/", "__") / f"s{sample}"
@@ -82,6 +85,8 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--max-worker-calls", type=int, default=14)
     parser.add_argument("--budget", type=float, default=2.0)
+    parser.add_argument("--max-calls", type=int, default=2000)
+    parser.add_argument("--state-filter", help="Regular expression; only resample matching state IDs")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--analyze", type=Path)
     args = parser.parse_args()
@@ -107,7 +112,7 @@ def main() -> int:
             "runs": [str(r) for r in args.runs],
             "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()})
         # Same generation settings as the rule-compaction runs.
-        client = OpenRouterClient(output, model="openai/gpt-6-luna", provider_name="OpenAI", budget_usd=args.budget, max_calls=2000,
+        client = OpenRouterClient(output, model="openai/gpt-6-luna", provider_name="OpenAI", budget_usd=args.budget, max_calls=args.max_calls,
                                   temperature=0.2, max_tokens=4096, reasoning_effort="low", timeout_retries=2)
         failure = None
         try:
