@@ -1,0 +1,2 @@
+- `app/inventory.py`: Added `low_stock(items)` to return below-threshold item names alphabetically.
+- `app/config.py`: Added `LOW_STOCK_THRESHOLD` configuration constant for the low-stock cutoff.

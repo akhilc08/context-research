@@ -1,6 +1,6 @@
 # Amendment-status test (pre-registered)
 
-Written on November 6, 2026, before any run of this design.
+Written on November 6, 2026, before any run of this design. The outcome is at the end.
 
 ## Question
 
@@ -70,3 +70,24 @@ Before running, the more likely outcome is that content explains most of it. The
 ## Cost
 
 About $3 to $4 for the run and about $0.70 for resampling.
+
+## Outcome (added after the run)
+
+Decision rule 2 was met: content explains the failures, and amendment status does not. The prediction written before the run was correct.
+
+State-level failure rates on the low-stock task after compaction, pooled with the earlier O-C and A-S sessions (`results/rule-compaction-amend-001/model-0/amendment-analysis.md`):
+
+| Cell | States | Mean state failure rate |
+|---|---|---|
+| O-C, `config.py`, original | 19 | 0.02 |
+| A-C, `config.py`, amended | 20 | 0.11 |
+| O-S, `settings.get`, original | 20 | 0.75 |
+| A-S, `settings.get`, amended | 20 | 0.56 |
+
+- Content, original rules (O-S against O-C): +0.73, p < 0.001.
+- Content, amended rules (A-S against A-C): +0.45, p < 0.001.
+- Status, `config.py` (A-C against O-C): +0.09, p = 0.10.
+- Status, `settings.get` (A-S against O-S): -0.19, p = 0.17.
+
+Without compaction, O-S and A-C followed the config rule in 20 of 20 branches. The functional audit agreed with the classifier in all 544 new branches and resamples.
+

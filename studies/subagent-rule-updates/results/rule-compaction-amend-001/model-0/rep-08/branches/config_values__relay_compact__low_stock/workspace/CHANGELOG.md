@@ -1,0 +1,2 @@
+- `app/inventory.py`: Add alphabetically sorted low-stock item query with configurable threshold.
+- `CHANGELOG.md`: Record the INV-215 inventory query change.

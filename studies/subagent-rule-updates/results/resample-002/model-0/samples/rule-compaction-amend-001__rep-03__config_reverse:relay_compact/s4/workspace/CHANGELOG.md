@@ -1,0 +1,1 @@
+- Add low_stock inventory query for items with quantity below 12.

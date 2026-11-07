@@ -1,0 +1,1 @@
+- Added low_stock(items) to list inventory items with quantity below the configured threshold in alphabetical order.

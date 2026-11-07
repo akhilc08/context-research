@@ -97,7 +97,7 @@ The manager also restated the full current rules with every later task, so in th
 - Every final summary still stated the new version of the changed rule. The worker kept the rule's text and fell back to its default anyway.
 - The unchanged rule stayed on its first version in every branch, and the changelog rule survived compaction completely.
 
-So compaction weakened one of two rules without deleting it. The uncompacted history grew to about 480k characters and was followed every time, so length alone does not explain the failures. This is Luna only.
+So compaction weakened one of two rules without deleting it. Section 9 shows this depends on the rule's content, not on its being an amendment. The uncompacted history grew to about 480k characters and was followed every time, so length alone does not explain the failures. This is Luna only.
 
 ### With pi's compaction
 
@@ -144,6 +144,25 @@ The two pi states that always failed both summarized the rule as "For tunable va
 Under compaction, the original config rule held on the low-stock task in 18 of 18 branches, while the amended config rule held in 11 of 20 (generic and pi pooled). The two versions differ in content (a constant in `app/config.py` against `app.settings.get`), in timing, and in whether an outdated version sits in the history, so this does not yet show that amendments are more fragile.
 
 A functional audit (`semantic_audit.py`) reran every submitted function with the setting changed. In all 296 scored branches of these runs it agreed with the classifier, and every implementation computed the correct result.
+
+## 9. The failures come from the rule's content, not from its being an amendment
+
+Section 8 left open why the amended config rule failed after compaction while the original config rule held. A pre-registered test (`docs/amendment-status-test.md`, `rule-compaction-amend-001`) swapped which config content was the original rule and which was the amendment. The unit was the compacted state, with the scored low-stock branch plus 5 resamples per state.
+
+| Config rule after compaction | States | Mean state failure rate |
+|---|---|---|
+| Constant in `app/config.py`, original | 19 | 0.02 |
+| Constant in `app/config.py`, amended | 20 | 0.11 |
+| `app.settings.get`, original | 20 | 0.75 |
+| `app.settings.get`, amended | 20 | 0.56 |
+
+The `settings.get` rule failed far more often than the `config.py` rule, whether it was the original rule or the amendment (p < 0.001 in both comparisons). Amendment status made no significant difference for either content. Without compaction, both new cells followed the rule in every branch.
+
+In nearly every compacted session the summary still stated the config rule. Two summaries in the original `settings.get` cell dropped all rules, and both of those sessions failed. In the others, the rule was kept and still not applied.
+
+So the effect is that after compaction, the worker keeps applying the `config.py` rule but often stops applying the `settings.get` rule, even though the summary states it. Before compaction, with the user's own words in the history, it applies both. The `settings.get` rule asks for more code (an import, a name for the setting, and a type conversion) than adding a constant, which may explain the difference. That explanation is untested.
+
+"Rule changes are more fragile than original rules" is not supported and should not be claimed.
 
 ## Smaller observations
 

@@ -1,0 +1,1 @@
+- Add inventory low-stock query for items with fewer than 12 units.

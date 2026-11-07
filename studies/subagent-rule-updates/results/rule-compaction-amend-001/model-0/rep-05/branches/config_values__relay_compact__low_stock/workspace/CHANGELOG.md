@@ -1,0 +1,1 @@
+- Added low_stock(items) inventory query, sorted alphabetically using the configurable threshold.

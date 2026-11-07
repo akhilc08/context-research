@@ -1,0 +1,2 @@
+- Added `low_stock(items)` to return alphabetized names of items below the configured threshold.
+- Added `LOW_STOCK_THRESHOLD` to `app/config.py` with the requested default of 12.

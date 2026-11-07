@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to return alphabetically sorted names below the inventory threshold.

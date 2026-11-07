@@ -1,0 +1,1 @@
+- Added a 7% pre-tax discount for orders containing 40 or more items.

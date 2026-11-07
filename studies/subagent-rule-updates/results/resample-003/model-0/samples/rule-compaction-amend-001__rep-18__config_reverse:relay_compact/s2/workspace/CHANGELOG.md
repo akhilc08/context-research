@@ -1,0 +1,1 @@
+- Added configurable low-stock threshold and `low_stock(items)` query, sorted alphabetically.

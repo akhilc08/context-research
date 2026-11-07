@@ -1,0 +1,1 @@
+- INV-215: Added low_stock inventory query.

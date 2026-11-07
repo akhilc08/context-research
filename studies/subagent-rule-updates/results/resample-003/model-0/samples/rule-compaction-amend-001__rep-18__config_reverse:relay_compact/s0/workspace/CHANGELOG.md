@@ -1,0 +1,1 @@
+- Added `LOW_STOCK_THRESHOLD` configuration and the alphabetically sorted `low_stock(items)` inventory query.

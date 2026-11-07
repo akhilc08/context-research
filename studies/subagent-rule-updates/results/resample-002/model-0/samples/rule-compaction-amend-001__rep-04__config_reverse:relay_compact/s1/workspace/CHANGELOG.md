@@ -1,0 +1,1 @@
+- Added `low_stock(items)` inventory query and configured its threshold at 12.

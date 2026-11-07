@@ -1,0 +1,3 @@
+- Added `low_stock(items)` to return alphabetized names of items below the configured threshold.
+- Added `LOW_STOCK_THRESHOLD` configuration constant set to 12.
+- Created this changelog to record the inventory feature changes.

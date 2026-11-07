@@ -1,0 +1,1 @@
+- Added low_stock(items) to return alphabetically sorted item names below the configured stock threshold of 12.

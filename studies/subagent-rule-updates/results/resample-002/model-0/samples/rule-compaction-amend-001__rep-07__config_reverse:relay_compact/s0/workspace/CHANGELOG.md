@@ -1,0 +1,1 @@
+- `app/inventory.py`: Added `low_stock(items)` to list low-quantity item names alphabetically.

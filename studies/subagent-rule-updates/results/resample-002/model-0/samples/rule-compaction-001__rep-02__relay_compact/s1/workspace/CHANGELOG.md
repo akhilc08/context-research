@@ -1,0 +1,1 @@
+- Add alphabetical low-stock item lookup to inventory queries.

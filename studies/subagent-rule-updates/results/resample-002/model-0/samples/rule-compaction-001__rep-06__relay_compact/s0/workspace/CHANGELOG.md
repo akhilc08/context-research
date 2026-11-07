@@ -1,0 +1,3 @@
+# Changelog
+
+- Added `low_stock(items)` inventory query to return alphabetically sorted names of items with quantity below 12.

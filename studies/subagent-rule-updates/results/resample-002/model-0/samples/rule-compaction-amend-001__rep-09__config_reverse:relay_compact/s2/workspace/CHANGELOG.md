@@ -1,0 +1,1 @@
+- Added low-stock inventory query with configurable threshold of 12.

@@ -1,0 +1,1 @@
+- Added a configured 7% pre-tax discount for orders totaling at least 40 items, with pricing coverage.

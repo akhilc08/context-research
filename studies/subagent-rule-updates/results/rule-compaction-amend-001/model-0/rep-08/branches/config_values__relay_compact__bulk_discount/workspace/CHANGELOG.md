@@ -1,0 +1,1 @@
+- `app/pricing.py`: Apply the configurable 7% bulk discount to qualifying order subtotals before tax.

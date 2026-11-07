@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to return alphabetically sorted names below the configured quantity threshold (default 12).

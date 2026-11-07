@@ -1,0 +1,1 @@
+- Added low_stock inventory query, configurable via LOW_STOCK_THRESHOLD (default 12), returning sorted item names.

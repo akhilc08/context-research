@@ -1,0 +1,1 @@
+- Added a 7% pre-tax discount for orders totaling 40 or more items and tests for bulk discount thresholds.

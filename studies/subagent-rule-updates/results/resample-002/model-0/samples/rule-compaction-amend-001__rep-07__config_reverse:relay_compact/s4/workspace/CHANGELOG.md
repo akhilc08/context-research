@@ -1,0 +1,1 @@
+- Added configurable low-stock threshold and `low_stock(items)` query in `app/config.py` and `app/inventory.py`.

@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to list item names below the configured inventory threshold in alphabetical order (INV-215).

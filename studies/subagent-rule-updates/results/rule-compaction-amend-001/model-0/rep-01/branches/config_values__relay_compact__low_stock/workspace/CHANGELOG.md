@@ -1,0 +1,1 @@
+- Added `low_stock(items)` to report inventory items with quantity below 12.

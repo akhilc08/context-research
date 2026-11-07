@@ -1,0 +1,1 @@
+- `app/inventory.py`: Added alphabetically sorted low-stock item names using the configurable threshold.

@@ -38,7 +38,12 @@ Several early runs exposed harness problems that were fixed before the next run.
 | `rule-compaction-store-002` | rule compaction, store and re-insertion | Luna | 80 branches | $2.51 | Store and re-insertion against generic compaction |
 | `resample-001` | resampled scored task | Luna | 100 runs | $0.20 | Low-stock task rerun 5 times from each compacted config state |
 
-Total spent through `resample-001`: about $48.22.
+| `rule-compaction-amend-pilot-001` | amendment-status test | Luna | 0 branches | $0.08 | Pilot, stopped by a dropped connection |
+| `rule-compaction-amend-pilot-002` | amendment-status test | Luna | 12 branches | $0.44 | Pilot |
+| `rule-compaction-amend-001` | amendment-status test | Luna | 140 branches | $4.73 | Original and amended config content swapped |
+| `resample-002`, `resample-003` | resampled scored task | Luna | 404 runs | $0.39 | Low-stock task rerun 5 times from each compacted state |
+
+Total spent through `resample-003`: about $53.86.
 
 ## Entries
 
@@ -85,4 +90,8 @@ This series uses `scenarios.py`, `worker.py`, `screen.py`, and `relay.py`. One f
 `rule-compaction-store-pilot-001`, `rule-compaction-store-pilot-002`, `rule-compaction-store-001`, and `rule-compaction-store-002` (GPT-6 Luna, `configs/rule-compaction-store.json`). The first pilot stopped when a request hung for 300 seconds. Successful requests take about 2 seconds at the median and 10 seconds at the 99th percentile, so the client now retries a hung request up to twice and keeps each abandoned attempt's full reservation as committed spend. `rule-compaction-store-001` stopped anyway, because live runs use Python 3.9.6, where `socket.timeout` is not a `TimeoutError`. That was fixed, the tests now also run on 3.9, and live commands name `/usr/bin/python3`. The pilot and `rule-compaction-store-002` ran as designed: store sessions held no rule text in their history, and re-insertion sessions had the verbatim amendment right after each summary. In `rule-compaction-store-002` (10 repetitions, 80 branches, about $2.51, no retries needed), store and re-insertion followed the new version of the changed rule in all 80 branches. One re-insertion branch where the changelog rule changed hardcoded the low-stock threshold, breaking the unchanged config rule.
 
 `resample-001` (GPT-6 Luna, `resample.py`, about $0.20). It reran the low-stock task 5 times from the saved final history of each valid compacted config session in `rule-compaction-001`, `002`, `pi-001`, and `pi-002`, with the same model settings. Generic states failed 27/50, spread across states (permutation test for per-state differences p = 0.02). pi states failed 14/50, concentrated in two states that failed 5/5 while six never failed. The two always-failing pi summaries phrased the rule as "For tunable values, use `app.settings.get`" without "do not hardcode".
+
+`rule-compaction-amend-pilot-001`, `rule-compaction-amend-pilot-002`, and `rule-compaction-amend-001` (GPT-6 Luna, `configs/rule-compaction-amendment.json`, design in `docs/amendment-status-test.md`). The first pilot stopped on a dropped connection, so the client now retries dropped connections the same way as hung requests. The second pilot ran as designed. `rule-compaction-amend-001` (140 branches, about $4.73, no retries needed) ran 20 compacted sessions each of the two new cells, 10 more of each existing cell, and 5 uncompacted sessions of each new cell. Every compacted session compacted 3 times. The uncompacted new cells followed the config rule in 20 of 20 branches. In two original `settings.get` sessions, the final summary kept only log results and no rules.
+
+`resample-002` and `resample-003` (about $0.39) reran the low-stock task 5 times from each compacted state of `rule-compaction-amend-001`, and from the compacted states of `rule-compaction-001` and `002`. `resample-002` stopped at its fixed 2,000-request cap after 389 of 400 reruns. `resample-003` reran the last three states in full, and the analysis uses it for those states. `analyze_amendment.py` computes the pre-registered state-level analysis. The `settings.get` rule failed far more often than the `config.py` rule, as original or as amendment, and amendment status made no significant difference (FINDINGS section 9).
 

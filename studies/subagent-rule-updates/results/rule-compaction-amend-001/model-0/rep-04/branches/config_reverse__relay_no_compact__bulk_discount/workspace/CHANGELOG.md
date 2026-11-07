@@ -1,0 +1,1 @@
+- INV-212: Apply a 7% pre-tax discount to orders of 40 or more items; configure the threshold, discount, and tax rates, and cover bulk discount behavior with tests.

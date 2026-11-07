@@ -1,0 +1,1 @@
+- Added `low_stock(items)` with a configurable threshold and alphabetically sorted results; covered threshold and sorting behavior in inventory tests.

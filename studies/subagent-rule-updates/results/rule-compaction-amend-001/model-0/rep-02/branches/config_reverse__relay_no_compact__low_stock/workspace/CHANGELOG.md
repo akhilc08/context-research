@@ -1,0 +1,2 @@
+- Added `low_stock(items)` to return alphabetized names of items below the configured low-stock threshold.
+- Added `LOW_STOCK_THRESHOLD` configuration set to 12.

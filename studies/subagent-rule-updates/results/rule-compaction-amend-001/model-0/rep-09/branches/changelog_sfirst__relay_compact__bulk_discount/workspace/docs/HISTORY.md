@@ -1,0 +1,2 @@
+- INV-212: Added the 7% subtotal discount for orders of 40 or more items.
+- INV-212: Added pricing tests for the discount threshold and pre-tax calculation.

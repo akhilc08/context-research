@@ -1,0 +1,1 @@
+- Added low-stock inventory lookup with an adjustable quantity threshold.

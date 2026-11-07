@@ -1,0 +1,3 @@
+- Added `low_stock(items)` in `app/inventory.py`, using configurable threshold `LOW_STOCK_THRESHOLD` from `app/config.py`.
+- Updated `app/config.py` with `LOW_STOCK_THRESHOLD = 12`.
+- Created `CHANGELOG.md` to record these file changes.

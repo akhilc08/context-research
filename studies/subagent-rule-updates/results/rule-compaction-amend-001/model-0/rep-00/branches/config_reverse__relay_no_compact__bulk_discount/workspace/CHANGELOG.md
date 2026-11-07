@@ -1,0 +1,1 @@
+- Added a 7% pre-tax subtotal discount for orders of 40 or more total items, with pricing values defined in app/config.py and boundary tests added.

@@ -1,0 +1,1 @@
+- Ticket INV-212: Add a 7% pre-tax discount for orders containing at least 40 total items; configure pricing thresholds and rates.

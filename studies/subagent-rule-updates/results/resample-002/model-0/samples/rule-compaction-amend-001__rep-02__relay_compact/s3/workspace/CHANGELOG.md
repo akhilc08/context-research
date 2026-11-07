@@ -1,0 +1,1 @@
+- Added `low_stock(items)` in `app/inventory.py` to return names of items with quantity below 12, sorted alphabetically.

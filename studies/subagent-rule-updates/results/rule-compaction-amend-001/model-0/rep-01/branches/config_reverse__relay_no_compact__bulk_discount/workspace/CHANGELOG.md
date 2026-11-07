@@ -1,0 +1,1 @@
+- Added a 7% pre-tax discount for orders containing at least 40 items, with pricing rates and threshold defined in app/config.py and tests added.

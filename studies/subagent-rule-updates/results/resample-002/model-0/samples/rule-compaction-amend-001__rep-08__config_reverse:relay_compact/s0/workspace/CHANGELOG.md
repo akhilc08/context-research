@@ -1,0 +1,1 @@
+- Added configurable low-stock threshold and alphabetical low_stock inventory query (INV-215).

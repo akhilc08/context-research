@@ -1,0 +1,1 @@
+- Added alphabetically sorted low-stock item query using a configurable quantity threshold.

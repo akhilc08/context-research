@@ -1,0 +1,1 @@
+- INV-215: Added alphabetized low-stock item lookup using the configured threshold.

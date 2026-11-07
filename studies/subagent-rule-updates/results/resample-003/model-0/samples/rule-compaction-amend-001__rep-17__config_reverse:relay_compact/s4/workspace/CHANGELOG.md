@@ -1,0 +1,1 @@
+- Added configurable low-stock threshold and alphabetically sorted `low_stock(items)` query, with test coverage (INV-215).
