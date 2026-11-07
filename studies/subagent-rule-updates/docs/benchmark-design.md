@@ -204,6 +204,10 @@ Analysis excludes two kinds of finished record from rates and counts each separa
 - `setup_invalid`: the placement names a history that never had a non-skipped compaction. Forced compaction should make this rare, but the check stays.
 - `delegation_invalid`: the record's `u0_delegated`, `u2_delegated`, or `u2_worker_finished` flag is false or missing. These flags come from the worker deliveries. They catch a manager that answered a task itself and a worker whose last U2 delivery did not finish.
 
+The manager can follow up after the worker's first U2 reply, for example by asking whether the notes were written. A follow-up like that can rescue a rule the worker forgot. The record therefore also scores the files as they stood when the worker first returned from U2 (`first_attempt`), and analysis reports a headline for that moment next to the final one. Two more fields show how much help the worker got: `u2_deliveries` counts the U2 deliveries, so more than one means the manager followed up, and `u2_first_restated_rules` is true when the first U2 delivery named a rule's path. Each delivery also records `rule_mentions`, which says which rule versions it names by path. These fields let a reader check what the manager relayed before blaming a failure on compaction. The free-model pilot showed all of these effects: in its audit, a manager reminder rescued a control run, and a manager relayed one unchanged rule wrongly.
+
+The worker's system prompt says that each task starts in a fresh checkout, so the worker does not assume its task 1 files are still present.
+
 The `no_change` control has no headline pass, since it never changes a rule. Analysis reports it in its own table instead: how many valid records kept both rules in their original version.
 
 There is no resume. A partial run needs a fresh output root, and `--resume` would have bypassed the spending cap. The runner refuses an existing model directory.

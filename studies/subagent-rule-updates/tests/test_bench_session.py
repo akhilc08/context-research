@@ -483,11 +483,45 @@ class SessionTest(unittest.TestCase):
             record, _, factory = self.run_cell(SE.Cell("relay", "none", "existing"), client=client)
         self.assertEqual(record["status"], "finished")
         self.assertIn("tests/test_a.py", factory.runners[1].files)  # The worker really wrote it.
-        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(seen), 4)  # changed and unchanged, at first U2 return and at the end
         for changes in seen:
             self.assertNotIn("tests/test_a.py", changes)
             self.assertIn("news/2.txt", changes)
         self.assertNotIn("tests/test_a.py", record["changed_paths"])
+
+    def test_first_attempt_scored_before_manager_follow_up(self):
+        class FollowUp(Scripted):
+            """No U1 relay; at U2 the manager sends a second delivery that restates the changed rule."""
+
+            def complete(self, messages, *, tools=None, tag="", **kwargs):
+                if messages[0]["content"].startswith(SE.MANAGER_SYSTEM) and "/t2/manager" in tag:
+                    last = max(i for i, m in enumerate(messages) if m["role"] == "user")
+                    step = sum(m["role"] == "assistant" for m in messages[last + 1:])
+                    if step == 1:
+                        self.n += 1
+                        self.requests.append({"tag": tag, "messages": messages})
+                        return call("message_worker", {"message": NOTES.changed + " Fix bug 2 in app.py."}, self.n)
+                return super().complete(messages, tools=tools, tag=tag, **kwargs)
+
+        record, _, _ = self.run_cell(SE.Cell("relay", "none", "existing"), client=FollowUp(relay_u1=False))
+        self.assertEqual(record["status"], "finished")
+        self.assertEqual(record["first_attempt"]["rules"]["changed"]["outcome"], "old")
+        self.assertEqual(record["first_attempt"]["worker_status"], "finished")
+        self.assertEqual(record["rules"]["changed"]["outcome"], "both")
+        self.assertFalse(SE.headline_pass(record, first=True))
+        self.assertEqual(record["u2_deliveries"], 2)
+        self.assertFalse(record["u2_first_restated_rules"])
+        u2 = [d for d in record["deliveries"] if d["turn"] == "U2"]
+        self.assertEqual(u2[1]["rule_mentions"]["changed"], {"old": False, "new": True})
+
+    def test_first_attempt_dropped_when_unfinished(self):
+        record, _, _ = self.run_cell(SE.Cell("relay", "none", "existing"), factory=Factory(fail_diff=True))
+        self.assertNotEqual(record["status"], "finished")
+        self.assertNotIn("first_attempt", record)
+
+    def test_rule_mentions(self):
+        mentions = SE.rule_mentions("Put the note in news/ and tag *.py files.", CASE, RULES)
+        self.assertEqual(mentions, {"changed": {"old": False, "new": True}, "unchanged": {"old": True, "new": True}})
 
     def test_record_saved(self):
         record, _, _ = self.run_cell(SE.Cell("store", "none", "existing"))

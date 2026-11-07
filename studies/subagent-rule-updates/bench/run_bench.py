@@ -146,6 +146,7 @@ def _empty() -> dict:
             "delegation_invalid": 0, "delegation_invalid_records": [], "valid_finished": 0,
             "changed": dict.fromkeys(OUTCOMES, 0), "unchanged": dict.fromkeys(OUTCOMES, 0),
             "headline_passes": 0, "control_passes": 0, "tests_resolved": 0, "cost_usd": 0.0,
+            "first_headline_passes": 0, "first_control_passes": 0, "u2_followups": 0, "u2_first_restated": 0,
             "by_changed_prior": {}}
 
 
@@ -170,6 +171,8 @@ def analyze(output: Path) -> dict:
                     raise KeyError("outcome")
                 passed = int(SE.headline_pass(record))
                 control = int(SE.control_pass(record))
+                first_passed = int(SE.headline_pass(record, first=True))
+                first_control = int(SE.control_pass(record, first=True))
                 resolved = int(bool((record.get("tests") or {}).get("resolved")))
         except (KeyError, TypeError, AttributeError):
             row["statuses"][status] -= 1
@@ -189,6 +192,10 @@ def analyze(output: Path) -> dict:
         row["headline_passes"] += passed
         row["control_passes"] += control
         row["tests_resolved"] += resolved
+        row["first_headline_passes"] += first_passed
+        row["first_control_passes"] += first_control
+        row["u2_followups"] += int((record.get("u2_deliveries") or 0) > 1)
+        row["u2_first_restated"] += int(bool(record.get("u2_first_restated_rules")))
         # The repository's own files can pull toward one version; analysis reports the headline per prior.
         prior = row["by_changed_prior"].setdefault(record["rules"]["changed"].get("repo_prior", "unknown"),
                                                    {"valid_finished": 0, "headline_passes": 0})
@@ -207,20 +214,25 @@ def render_tables(summary: dict) -> str:
         return "/".join(str(counts[o]) for o in OUTCOMES)
     lines = ["Outcome counts are new/old/both/neither over valid finished records. "
              "setup_invalid and delegation_invalid records are excluded from them. "
-             "The no_change control has no headline; see the control table.", "",
+             "The no_change control has no headline; see the control table. "
+             "first: headline when the worker first returned from U2, before any manager follow-up. "
+             "follow-ups: records where the manager sent U2 work more than once. "
+             "restated: records whose first U2 delivery named a rule's path, so the worker was reminded.", "",
              "| cell | records | statuses | setup_invalid | delegation_invalid | valid | changed | unchanged | headline "
-             "| tests | cost USD |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| first | follow-ups | restated | tests | cost USD |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     control = []
     for cid, c in sorted(summary["cells"].items()):
         statuses = ", ".join("%s %d" % (k, v) for k, v in sorted(c["statuses"].items()))
         is_control = cid.startswith("no_change__")
-        lines.append("| %s | %d | %s | %d | %d | %d | %s | %s | %s | %d | %.4f |" % (
+        lines.append("| %s | %d | %s | %d | %d | %d | %s | %s | %s | %s | %d | %d | %d | %.4f |" % (
             cid, c["records"], statuses, c["setup_invalid"], c["delegation_invalid"], c["valid_finished"],
             fmt(c["changed"]), fmt(c["unchanged"]), "n/a" if is_control else str(c["headline_passes"]),
-            c["tests_resolved"], c["cost_usd"]))
+            "n/a" if is_control else str(c.get("first_headline_passes", 0)), c.get("u2_followups", 0),
+            c.get("u2_first_restated", 0), c["tests_resolved"], c["cost_usd"]))
         if is_control:
-            control.append("| %s | %d | %d |" % (cid, c["valid_finished"], c["control_passes"]))
+            control.append("| %s | %d | %d | %d |" % (cid, c["valid_finished"], c["control_passes"],
+                                                     c.get("first_control_passes", 0)))
     priors = sorted({p for c in summary["cells"].values() for p in c.get("by_changed_prior", {})})
     if priors:
         lines += ["", "Headline passes / valid records, split by the changed rule's repo_prior (which version the "
@@ -234,7 +246,7 @@ def render_tables(summary: dict) -> str:
                 "%d/%d" % (by[p]["headline_passes"], by[p]["valid_finished"]) if p in by else "-" for p in priors)))
     if control:
         lines += ["", "No-change control: both rules kept in their original version (changed old, unchanged old).", "",
-                  "| cell | valid | both old |", "|---|---|---|"] + control
+                  "| cell | valid | both old | both old at first return |", "|---|---|---|---|"] + control
     return "\n".join(lines) + "\n"
 
 

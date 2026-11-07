@@ -5,7 +5,9 @@ worker-1, through message_worker. U0 gives both original rules and the first tas
 changes one rule, real trajectories from the same repository are appended as history and
 compacted where the cell's placement says, and U2 gives the second task without restating
 the rules. The second task's final files are scored for both rules and against the task's
-tests. No provider calls happen on import; the client is injected.
+tests. The files as they stand when the worker first returns from U2 are scored too
+(first_attempt), before any manager follow-up can remind it of a rule. No provider calls
+happen on import; the client is injected.
 """
 from __future__ import annotations
 
@@ -44,7 +46,7 @@ CELLS = tuple(
 # Held fixed in every cell. Conditions differ only in what the harness adds.
 MANAGER_SYSTEM = R.MANAGER_SYSTEM + "\n\nPass on any user instructions the worker needs."
 MANAGER_TOOLS = R.MANAGER_TOOLS
-BENCH_WORKER_SYSTEM = """You are a coding agent working in a software repository. Use the tools to inspect and change it: read_file and write_file for files, and run_command for shell commands such as searching the code or running tests. File writes and commands really execute.
+BENCH_WORKER_SYSTEM = """You are a coding agent working in a software repository. Use the tools to inspect and change it: read_file and write_file for files, and run_command for shell commands such as searching the code or running tests. File writes and commands really execute. Each task starts in a fresh checkout of the repository, so files written for an earlier task are not there.
 
 Finish with a short summary of what you changed."""
 RULES_OPEN = "[Current project rules from the user, supplied by the harness]"
@@ -116,6 +118,8 @@ class Team:
         self.workspace: Optional[ContainerWorkspace] = None
         self.deliveries: List[dict] = []
         self.label = "U0"
+        self.score_first_u2: Optional[Callable[[], dict]] = None  # Set by run_cell for the U2 workspace.
+        self.first_attempt: Optional[dict] = None
 
     def store(self) -> bool:
         return self.cell.condition == "store"
@@ -144,7 +148,11 @@ class Team:
         self.worker_history = result["history"]
         self.deliveries.append({"turn": self.label, "worker": WORKER_NAME, "text": text, "status": result["status"],
                                 "error": result["error"], "system_hash": H.digest(system),
-                                "events": [first_event, len(workspace.events)], "calls": len(result["responses"])})
+                                "events": [first_event, len(workspace.events)], "calls": len(result["responses"]),
+                                "rule_mentions": rule_mentions(text, self.case, self.rules)})
+        if self.label == "U2" and self.first_attempt is None and self.score_first_u2 is not None \
+                and result["status"] != "provider_error":
+            self.first_attempt = {"worker_status": result["status"], **self.score_first_u2()}
         if result["status"] == "provider_error":
             raise ProviderError("Worker provider error: %s" % result["error"])
         return {"worker": WORKER_NAME, "status": result["status"], "reply": W.final_text(result["history"])}
@@ -251,13 +259,29 @@ def reset_worker(team: Team) -> dict:
     return {"history_messages_before": before, "system": team.current_worker_system()}
 
 
-def score(ws: ContainerWorkspace, case: Case, rules: Dict[str, RuleSpec], row: TaskRow) -> dict:
+def _rule_token(matcher: dict) -> str:
+    return matcher["path_glob"] if matcher["type"] == "added_line" else matcher["dir"].rstrip("/") + "/"
+
+
+def rule_mentions(text: str, case: Case, rules: Dict[str, RuleSpec]) -> dict:
+    """Which rule versions a delivery names, by the path each version writes to. A delivery that names
+    them during U2 restates the rules, so the worker did not have to remember them."""
+    return {kind: {v: _rule_token(getattr(rules[rid], v)) in text for v in ("old", "new")}
+            for kind, rid in (("changed", case.changed_rule), ("unchanged", case.unchanged_rule))}
+
+
+def rule_outcomes(ws: ContainerWorkspace, case: Case, rules: Dict[str, RuleSpec], row: TaskRow) -> dict:
     changes = ws.changes(row.base_commit, exclude=frozenset(test_patch_paths(row.test_patch)))
     issue = issue_number(row.instance_id)
     outcomes = {kind: {"rule": rid, "repo_prior": rules[rid].repo_prior, **classify(rules[rid], changes, issue=issue)}
                 for kind, rid in (("changed", case.changed_rule), ("unchanged", case.unchanged_rule))}
+    return {"rules": outcomes, "changed_paths": sorted(changes)}
+
+
+def score(ws: ContainerWorkspace, case: Case, rules: Dict[str, RuleSpec], row: TaskRow) -> dict:
+    result = rule_outcomes(ws, case, rules, row)
     ws.open_network()
-    return {"rules": outcomes, "changed_paths": sorted(changes), "tests": score_tests(ws, row)}
+    return {**result, "tests": score_tests(ws, row)}
 
 
 def _run_task(team: Team, ws: ContainerWorkspace, turns: List[dict], labelled: List[tuple]) -> bool:
@@ -314,9 +338,12 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
             ws = workspace_factory(rows[case.second], outdir / "task2")
             try:
                 ws.start()
+                team.score_first_u2 = lambda ws=ws: rule_outcomes(ws, case, rules, rows[case.second])
                 ok = _run_task(team, ws, record["turns"], labelled[-1:])
                 if ok:
                     record.update(score(ws, case, rules, rows[case.second]))
+                    if team.first_attempt is not None:
+                        record["first_attempt"] = team.first_attempt
             finally:
                 ws.stop()
             if not ok:
@@ -330,6 +357,7 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
     if status != "finished":
         record.pop("rules", None)
         record.pop("tests", None)
+        record.pop("first_attempt", None)
     record.update(delegation_flags(team.deliveries))
     record.update({"status": status, "deliveries": team.deliveries, "calls": recorder.calls,
                    "manager_system_final": team.manager_system(), "worker_system_final": team.current_worker_system(),
@@ -339,27 +367,34 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
 
 
 def delegation_flags(deliveries: List[dict]) -> dict:
-    """Whether the manager delegated U0 and U2, and whether the worker finished its last U2 delivery."""
+    """Whether the manager delegated U0 and U2, whether the worker finished its last U2 delivery, how many
+    U2 deliveries there were (more than one means the manager followed up), and whether the first U2
+    delivery restated a rule."""
     u2 = [d for d in deliveries if d["turn"] == "U2"]
+    restated = bool(u2) and any(any(v.values()) for v in u2[0].get("rule_mentions", {}).values())
     return {"u0_delegated": any(d["turn"] == "U0" for d in deliveries), "u2_delegated": bool(u2),
-            "u2_worker_finished": bool(u2) and u2[-1]["status"] == "finished"}
+            "u2_worker_finished": bool(u2) and u2[-1]["status"] == "finished", "u2_deliveries": len(u2),
+            "u2_first_restated_rules": restated}
 
 
-def _outcomes(record: dict) -> Optional[tuple]:
-    rules = record.get("rules") if record.get("status") == "finished" else None
+def _outcomes(record: dict, first: bool = False) -> Optional[tuple]:
+    if record.get("status") != "finished":
+        return None
+    rules = (record.get("first_attempt") or {}).get("rules") if first else record.get("rules")
     if not rules:
         return None
     return rules["changed"]["outcome"], rules["unchanged"]["outcome"]
 
 
-def headline_pass(record: dict) -> bool:
-    """Changed rule followed in its new version and unchanged rule kept. Not defined for no_change."""
+def headline_pass(record: dict, first: bool = False) -> bool:
+    """Changed rule followed in its new version and unchanged rule kept. Not defined for no_change.
+    first=True scores the files as they stood when the worker first returned from U2."""
     if record.get("cell", {}).get("condition") == "no_change":
         return False
-    return _outcomes(record) == ("new", "old")
+    return _outcomes(record, first) == ("new", "old")
 
 
-def control_pass(record: dict) -> bool:
+def control_pass(record: dict, first: bool = False) -> bool:
     """The no_change control: both rules still followed in their original version."""
-    return record.get("cell", {}).get("condition") == "no_change" and _outcomes(record) == ("old", "old")
+    return record.get("cell", {}).get("condition") == "no_change" and _outcomes(record, first) == ("old", "old")
 

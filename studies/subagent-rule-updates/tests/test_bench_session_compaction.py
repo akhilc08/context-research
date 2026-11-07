@@ -124,7 +124,8 @@ class DelegationTests(SessionTest):
     def test_unfinished_u2_worker(self):
         flags = SE.delegation_flags([{"turn": "U0", "status": "finished"}, {"turn": "U2", "status": "finished"},
                                      {"turn": "U2", "status": "call_limit"}])
-        self.assertEqual(flags, {"u0_delegated": True, "u2_delegated": True, "u2_worker_finished": False})
+        self.assertEqual(flags, {"u0_delegated": True, "u2_delegated": True, "u2_worker_finished": False,
+                                 "u2_deliveries": 2, "u2_first_restated_rules": False})
         self.assertFalse(SE.delegation_flags([{"turn": "U2", "status": "finished"}])["u0_delegated"])
 
 
@@ -139,6 +140,17 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(SE.headline_pass(self.rec("no_change", "new", "old")))
         self.assertFalse(SE.control_pass(self.rec("relay", "old", "old")))
         self.assertTrue(SE.headline_pass(self.rec("relay", "new", "old")))
+
+    def test_first_attempt_pass(self):
+        rec = self.rec("relay", "new", "old")
+        self.assertFalse(SE.headline_pass(rec, first=True))  # no first_attempt recorded
+        rec["first_attempt"] = {"rules": {"changed": {"outcome": "old"}, "unchanged": {"outcome": "old"}}}
+        self.assertFalse(SE.headline_pass(rec, first=True))
+        self.assertTrue(SE.headline_pass(rec))
+        ctl = self.rec("no_change", "old", "old")
+        ctl["first_attempt"] = {"rules": {"changed": {"outcome": "neither"}, "unchanged": {"outcome": "neither"}}}
+        self.assertFalse(SE.control_pass(ctl, first=True))
+        self.assertTrue(SE.control_pass(ctl))
 
 
 if __name__ == "__main__":
