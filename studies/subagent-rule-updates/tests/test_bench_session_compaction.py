@@ -70,6 +70,15 @@ class ThresholdTests(SessionTest):
             expected = SE.rule_mentions(e["summary"], CASE, RULES)
             self.assertEqual(mentions, expected)
 
+    def test_compaction_without_rules_does_not_record_mentions(self):
+        # Compaction must not depend on rules (test_bench_content builds a Team with none).
+        team = SE.Team(SE.RecordingClient(Scripted()), SE.Cell("relay", "worker", "existing"), CASE, {}, "t",
+                       {**CONFIG, "compact_threshold_chars": 0})
+        team.worker_history = [{"role": "user", "content": "x" * 50}, {"role": "assistant", "content": "ok"}]
+        event = SE._compact(team, "worker-1", 0, {}, None)
+        self.assertFalse(event["skipped"])
+        self.assertNotIn("summary_rule_mentions", event)
+
     def test_forced_compaction_reinserts_u1(self):
         u1 = SE.user_turns(CASE, RULES, ROWS)[1]
         config = {**CONFIG, "compact_threshold_chars": NEVER, "manager_compact_threshold_chars": NEVER}

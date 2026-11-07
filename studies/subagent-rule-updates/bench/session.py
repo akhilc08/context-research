@@ -225,7 +225,7 @@ def _compact(team: Team, name: str, after_block: int, pi_states: Dict[str, PI.Pi
                   "forced_generic": forced_generic})
     # Whether the summary still names each rule version. In the controlled study, rules were often kept in
     # the summary and still not applied, so retention and compliance are recorded separately.
-    if not skipped:
+    if not skipped and {team.case.changed_rule, team.case.unchanged_rule} <= set(team.rules):
         event["summary_rule_mentions"] = rule_mentions(event.get("summary") or "", team.case, team.rules)
     return event
 
