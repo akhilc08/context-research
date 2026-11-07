@@ -1,0 +1,3 @@
+- Added configurable order discount threshold and rate for the 40-item, 7% subtotal discount.
+- Applied eligible order discounts before tax in pricing calculations.
+- Added pricing tests for discount threshold eligibility and tax ordering.
