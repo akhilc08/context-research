@@ -136,6 +136,7 @@ class RunnerTests(unittest.TestCase):
             client, _, code = self.live(tmp, ["--allow-unvalidated", "--allow-unscreened"], rules=UNSCREENED)
             self.assertEqual(code, 0)
             client.assert_called_once()
+            self.assertEqual(client.call_args.kwargs["timeout_retries"], 0)  # Not set in CONFIG.
             gates = json.loads((tmp / "out/model-0/manifest.json").read_text())["gates"]
             self.assertEqual(gates, {"validation": None, "dropped_cases": [], "allow_unvalidated": True,
                                      "allow_unscreened": True, "unscreened_rules": ["o/r:notes", "o/r:tags"]})

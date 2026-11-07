@@ -385,7 +385,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                   budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
                                   temperature=config["temperature"], max_tokens=config["max_output_tokens"],
                                   reasoning_effort=config["reasoning_effort"],
-                                  rate_limit_retries=config.get("rate_limit_retries", 0))
+                                  rate_limit_retries=config.get("rate_limit_retries", 0),
+                                  timeout_retries=config.get("timeout_retries", 0))
         failure = None
         try:
             failure = execute(client, model_dir, plan, cases, config, rows=rows, trajectories=trajectories,
