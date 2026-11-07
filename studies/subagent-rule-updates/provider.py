@@ -41,7 +41,7 @@ class ProviderError(RuntimeError):
 
 
 class TransportTimeout(ProviderError):
-    """The request hung past the transport timeout. Billing is unknown."""
+    """The request hung past the transport timeout or its connection dropped. Billing is unknown."""
 
 
 class RateLimited(ProviderError):
@@ -282,7 +282,9 @@ class OpenRouterClient:
             failure = type(error).__name__
             # urllib raises socket read timeouts directly and wraps connect-stage timeouts in URLError.
             # socket.timeout is a separate class before Python 3.10, so check it explicitly.
-            timeouts = (TimeoutError, socket.timeout)
+            # Dropped connections (ConnectionError, including http.client.RemoteDisconnected) have the
+            # same unknown-billing risk as a hang and are retried the same way.
+            timeouts = (TimeoutError, socket.timeout, ConnectionError)
             timed_out = isinstance(error, timeouts) or isinstance(getattr(error, "reason", None), timeouts)
         latency = time.monotonic() - start
         raw_text = None

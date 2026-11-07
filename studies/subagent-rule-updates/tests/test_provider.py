@@ -135,8 +135,15 @@ class ProviderTests(unittest.TestCase):
         summary = client.summary()
         self.assertEqual((summary["timeouts_retried"], summary["rate_limits_retried"], len(fake.posts)), (1, 1, 3))
 
+    def test_dropped_connection_is_retried(self):
+        import http.client
+        client, fake = self.client(FakeTransport([http.client.RemoteDisconnected("closed"), success()]), timeout_retries=1)
+        client.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
+
     def test_other_transport_failures_are_never_retried(self):
-        client, fake = self.client(FakeTransport([ConnectionResetError(), success()]), timeout_retries=2)
+        import ssl
+        client, fake = self.client(FakeTransport([ssl.SSLError("bad record"), success()]), timeout_retries=2)
         with self.assertRaises(ProviderError):
             client.complete([{"role": "user", "content": "hi"}])
         self.assertEqual(len(fake.posts), 1)
