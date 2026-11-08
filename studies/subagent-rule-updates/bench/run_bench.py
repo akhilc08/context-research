@@ -357,7 +357,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("Unscreened rules: %s. Screen them or pass --allow-unscreened." % ", ".join(unscreened))
     from bench.sources import load_rows, trajectory_index
     from provider import OpenRouterClient, load_key
-    rows = {r.instance_id: r for r in load_rows(data_root / PARQUET)}
+    rows = {r.instance_id: r for r in load_rows(data_root / PARQUET, repos={cases[e["case_id"]].repo for e in plan})}
     tasks = sorted({t for e in plan for t in (cases[e["case_id"]].first, cases[e["case_id"]].second)})
     if set(tasks) - set(rows):
         raise SystemExit("Missing task rows: %s" % ", ".join(sorted(set(tasks) - set(rows))))

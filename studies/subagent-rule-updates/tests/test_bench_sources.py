@@ -60,6 +60,13 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(r.license, "MIT")
         self.assertEqual(r.workdir, "/requests")
 
+    def test_load_rows_filters_repos_while_reading(self):
+        rows = sources.load_rows(self._parquet(), language=None, repos=["nobody/none"])
+        self.assertEqual(rows, [])
+        both = sources.load_rows(self._parquet(), language=None)
+        only = sources.load_rows(self._parquet(), language=None, repos=[both[0].repo])
+        self.assertEqual([r.instance_id for r in only], [r.instance_id for r in both if r.repo == both[0].repo])
+
     def test_load_rows_all_languages(self):
         self.assertEqual(len(sources.load_rows(self._parquet(), language=None)), 2)
 

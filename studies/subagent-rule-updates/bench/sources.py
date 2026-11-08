@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Iterable, Dict, List, Optional, Tuple
 
 import pyarrow.parquet as pq
 
@@ -50,8 +50,15 @@ def _epoch(value) -> int:
     return int(calendar.timegm(time.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S")))
 
 
-def load_rows(parquet: Path, *, language: Optional[str] = "python") -> List[TaskRow]:
-    table = pq.read_table(str(parquet), columns=_COLUMNS)
+def load_rows(parquet: Path, *, language: Optional[str] = "python", repos: Optional[Iterable[str]] = None) -> List[TaskRow]:
+    """Filters are applied while reading, so only matching rows are built in memory. Converting the whole
+    parquet to Python objects takes 4 to 7 GB, which ran several runners out of memory at once."""
+    filters = []
+    if language is not None:
+        filters.append(("language", "==", language))
+    if repos is not None:
+        filters.append(("repo", "in", sorted(set(repos))))
+    table = pq.read_table(str(parquet), columns=_COLUMNS, filters=filters or None)
     rows = []
     for r in table.to_pylist():
         if language is not None and r["language"] != language:

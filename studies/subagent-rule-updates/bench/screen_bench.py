@@ -249,7 +249,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise SystemExit("Cannot load rules: %s: %s" % (type(exc).__name__, exc))
     from bench.sources import load_rows
     from provider import OpenRouterClient, load_key
-    rows = {r.instance_id: r for r in load_rows(data_root / RB.PARQUET)}
+    rows = {r.instance_id: r for r in load_rows(data_root / RB.PARQUET, repos={cases[e["case_id"]].repo for e in plan})}
     missing = sorted({cases[e["case_id"]].first for e in plan} - set(rows))
     if missing:
         raise SystemExit("Missing task rows: %s" % ", ".join(missing))
