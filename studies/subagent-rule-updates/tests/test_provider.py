@@ -141,6 +141,14 @@ class ProviderTests(unittest.TestCase):
         client.complete([{"role": "user", "content": "hi"}])
         self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
 
+    def test_invalid_json_body_is_retried(self):
+        client, fake = self.client(FakeTransport([(200, b"{truncated"), success()]), timeout_retries=1)
+        client.complete([{"role": "user", "content": "hi"}])
+        self.assertEqual((len(fake.posts), client.summary()["timeouts_retried"]), (2, 1))
+        client2 = OpenRouterClient(self.root / "default", transport=FakeTransport([(200, b"{truncated")]))  # Not retried by default.
+        with self.assertRaises(ProviderError):
+            client2.complete([{"role": "user", "content": "hi"}])
+
     def test_other_transport_failures_are_never_retried(self):
         import ssl
         client, fake = self.client(FakeTransport([ssl.SSLError("bad record"), success()]), timeout_retries=2)

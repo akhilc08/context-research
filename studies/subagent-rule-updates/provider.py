@@ -317,7 +317,9 @@ class OpenRouterClient:
         if not isinstance(status, int) or not 200 <= status < 300:
             raise ProviderError("HTTP failure; no retry (billing unknown)")
         if not isinstance(parsed, dict):
-            raise ProviderError("Invalid JSON response; billing unknown")
+            # A 2xx body that does not parse has the same unknown-billing risk as a dropped connection,
+            # so it is retried the same way when timeout_retries is set.
+            raise TransportTimeout("Invalid JSON response; billing unknown")
         return parsed
 
     def complete(self, messages: list, *, tools: list | None = None, json_mode: bool = False, tag: str = "") -> dict:

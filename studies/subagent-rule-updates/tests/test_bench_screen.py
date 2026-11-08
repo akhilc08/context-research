@@ -75,6 +75,16 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(SB.screen_verdicts(recs("r", "none", ["neither"]))["r"]["passed"])
 
 
+class RepoKeyTests(unittest.TestCase):
+    def test_same_rule_id_in_two_repos_is_screened_separately(self):
+        good = [dict(r, repo="a/x") for r in make(0, 10, 10)]
+        bad = [dict(r, repo="b/y") for r in make(5, 10, 10)]
+        v = SB.screen_verdicts(good + bad)
+        self.assertEqual(set(v), {"a/x:r", "b/y:r"})
+        self.assertTrue(v["a/x:r"]["passed"])
+        self.assertFalse(v["b/y:r"]["passed"])
+
+
 class FixRoundTests(unittest.TestCase):
     def test_none_arm_call_limit_is_excluded_not_counted_as_neither(self):
         # 3 of 10 finished none runs match (fails). Ten call_limit runs that wrote nothing must not dilute that.
@@ -189,7 +199,7 @@ class RunnerTests(unittest.TestCase):
                              {"none": "neither", "original": "old", "changed": "new"})
             self.assertTrue(by_arm["none"]["first_message"].startswith("Task: "))
             self.assertTrue(by_arm["original"]["first_message"].startswith("Project rule from the user: Add a release note as changes/"))
-            self.assertEqual(result["verdicts"]["notes"]["original_follow_rate"], 1.0)
+            self.assertEqual(result["verdicts"]["o/r:notes"]["original_follow_rate"], 1.0)
             self.assertTrue((out / "screening.json").exists())
 
     def test_execute_stops_on_provider_error_and_continues_past_infra(self):

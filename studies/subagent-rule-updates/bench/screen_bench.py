@@ -140,10 +140,16 @@ def execute(client: Any, model_dir: Path, plan: List[dict], cases: Dict[str, Any
         streak.report()
 
 
+def rule_key(record: dict) -> str:
+    """Rule ids repeat across repositories (change-entry is in five), so verdicts are keyed "repo:rule_id",
+    the same form as run_bench's unscreened-rule gate. Records without a repo keep the bare rule id."""
+    return "%s:%s" % (record["repo"], record["rule_id"]) if record.get("repo") else record["rule_id"]
+
+
 def _split(records: List[dict], rule_ids: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, List[dict]]]:
     by_rule: Dict[str, Dict[str, List[dict]]] = {rid: {a: [] for a in arms()} for rid in (rule_ids or ())}
     for r in records:
-        by_rule.setdefault(r["rule_id"], {a: [] for a in arms()})[r["arm"]].append(r)
+        by_rule.setdefault(rule_key(r), {a: [] for a in arms()})[r["arm"]].append(r)
     return by_rule
 
 
@@ -272,7 +278,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                               workspace_factory=RB.config_workspace_factory(config))
         finally:
             save(model_dir / "provider_summary.json", client.summary())
-            analyze(model_dir, sorted({e["rule_id"] for e in plan}))
+            analyze(model_dir, sorted({rule_key(e) for e in plan}))
         print("SCREEN_COMPLETE output=%s error=%s" % (model_dir, failure), flush=True)
         return 1 if failure else 0
 
