@@ -80,11 +80,29 @@ def with_rules(system: str, case: Case, rules: Dict[str, RuleSpec], changed: boo
     return "%s\n\n%s\n%s\n%s" % (system, RULES_OPEN, current_rules(case, rules, changed), RULES_CLOSE)
 
 
-def user_turns(case: Case, rules: Dict[str, RuleSpec], rows: Dict[str, TaskRow], *, change: bool = True) -> List[str]:
+CHANGE_MESSAGES = ("plain", "explicit")
+
+
+def change_message(case: Case, rules: Dict[str, RuleSpec], style: str = "plain") -> str:
+    """U1. "plain" is the original wording, used by bench-pilot-001. It names neither the rule nor what the
+    change replaces, and in that pilot the manager often relayed the old and new versions as both active.
+    "explicit" names the rule by its U0 number and the old version's location, taken from its matcher."""
+    rule = rules[case.changed_rule]
+    if style == "plain":
+        return "A change to one of my rules, effective now: %s" % rule.changed
+    if style == "explicit":
+        number = rule_order(case).index(case.changed_rule) + 1
+        return ("A change to rule %d, effective now: %s This replaces rule %d as I stated it before, "
+                "so stop using %s." % (number, rule.changed, number, _rule_token(rule.old)))
+    raise ValueError("Unknown change message style: %r" % (style,))
+
+
+def user_turns(case: Case, rules: Dict[str, RuleSpec], rows: Dict[str, TaskRow], *, change: bool = True,
+               style: str = "plain") -> List[str]:
     """[U0, U1, U2], or [U0, U2] for the no-change control. Byte-identical across cells."""
     u0 = "Two project rules for this session:\n%s\n\nFirst task: %s" % (
         current_rules(case, rules, False), rows[case.first].problem_statement)
-    u1 = "A change to one of my rules, effective now: %s" % rules[case.changed_rule].changed
+    u1 = change_message(case, rules, style)
     u2 = "Next task: %s" % rows[case.second].problem_statement
     return [u0, u1, u2] if change else [u0, u2]
 
@@ -315,7 +333,8 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
     outdir = Path(outdir)
     recorder = RecordingClient(client)
     team = Team(recorder, cell, case, rules, "%s/%s" % (case.case_id, cell_id(cell)), config)
-    texts = user_turns(case, rules, rows, change=cell.condition != "no_change")
+    texts = user_turns(case, rules, rows, change=cell.condition != "no_change",
+                       style=config.get("change_message", "plain"))
     labels = ["U0", "U1", "U2"] if len(texts) == 3 else ["U0", "U2"]
     labelled = list(zip(labels, texts))
     u1 = texts[1] if len(texts) == 3 else None
@@ -324,7 +343,7 @@ def run_cell(client: Any, case: Case, cell: Cell, *, rules: Dict[str, RuleSpec],
                               "user_turns": texts, "turns": [], "compactions": [], "config": {
                                   k: config.get(k) for k in ("compact_threshold_chars", "manager_compact_threshold_chars",
                                                              "compactor", "max_manager_calls", "max_worker_calls",
-                                                             "container_network", "scoring_network")}}
+                                                             "container_network", "scoring_network", "change_message")}}
     status = "finished"
     try:
         ws = workspace_factory(rows[case.first], outdir / "task1")

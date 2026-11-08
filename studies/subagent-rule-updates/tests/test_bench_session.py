@@ -200,6 +200,24 @@ class SessionTest(unittest.TestCase):
         self.assertEqual({c.condition for c in SE.CELLS if c.worker_type == "existing"} - {"no_change"},
                          {"relay", "reinsert", "store"})
 
+    def test_explicit_change_message_names_rule_and_old_location(self):
+        u1 = SE.change_message(CASE, RULES, "explicit")
+        number = SE.rule_order(CASE).index(CASE.changed_rule) + 1
+        rule = RULES[CASE.changed_rule]
+        self.assertTrue(u1.startswith("A change to rule %d, effective now: %s" % (number, rule.changed)))
+        self.assertIn("This replaces rule %d" % number, u1)
+        self.assertIn(SE._rule_token(rule.old), u1)
+        self.assertEqual(SE.change_message(CASE, RULES), "A change to one of my rules, effective now: %s" % rule.changed)
+        self.assertEqual(SE.user_turns(CASE, RULES, ROWS, style="explicit")[1], u1)
+        with self.assertRaises(ValueError):
+            SE.change_message(CASE, RULES, "loud")
+
+    def test_change_message_style_reaches_the_record(self):
+        record, client, _ = self.run_cell(SE.Cell("relay", "none", "existing"), config={**CONFIG, "change_message": "explicit"})
+        self.assertEqual(record["status"], "finished")
+        self.assertEqual(record["config"]["change_message"], "explicit")
+        self.assertEqual(record["user_turns"][1], SE.change_message(CASE, RULES, "explicit"))
+
     def test_user_turns(self):
         turns = SE.user_turns(CASE, RULES, ROWS)
         self.assertEqual(len(turns), 3)
