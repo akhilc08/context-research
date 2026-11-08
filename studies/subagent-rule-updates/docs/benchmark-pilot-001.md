@@ -45,3 +45,9 @@ Screening (`bench-screen-001`) found every rule passing in every repository: 294
 - With a real manager that restates rules, worker-only compaction under relay tests nothing. The informative placements are manager compaction and both, or worker compaction under a condition where the manager does not restate the rules.
 - Location rules still have no evidence of compaction loss. Code-style rules remain the open addition.
 
+
+## Follow-up: wording check (pre-registered)
+
+Written before the run. `configs/bench-v1-wording.json` repeats the `relay__none__existing` cell with `change_message: "explicit"`, which names the changed rule by its number and the old location it replaces. Only the five cases with no-compaction failures in pilot 001 run, three repetitions each: `HypothesisWorks__hypothesis--change-summary`, `HypothesisWorks__hypothesis--upgrade-note`, `dbt-labs__dbt-redshift--change-entry`, `pallets__click--changes-entry`, and `stac-utils__pystac--change-entry`. In pilot 001, 10 of these 15 cells failed, nearly all as "both".
+
+Prediction: at most 3 of the 15 fail. If more do, the "both" failures have another cause.
