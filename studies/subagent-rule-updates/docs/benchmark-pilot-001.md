@@ -51,3 +51,9 @@ Screening (`bench-screen-001`) found every rule passing in every repository: 294
 Written before the run. `configs/bench-v1-wording.json` repeats the `relay__none__existing` cell with `change_message: "explicit"`, which names the changed rule by its number and the old location it replaces. Only the five cases with no-compaction failures in pilot 001 run, three repetitions each: `HypothesisWorks__hypothesis--change-summary`, `HypothesisWorks__hypothesis--upgrade-note`, `dbt-labs__dbt-redshift--change-entry`, `pallets__click--changes-entry`, and `stac-utils__pystac--change-entry`. In pilot 001, 10 of these 15 cells failed, nearly all as "both".
 
 Prediction: at most 3 of the 15 fail. If more do, the "both" failures have another cause.
+
+### Outcome of the wording check (added after the run)
+
+All 15 cells finished, at a cost of about $0.47, and all 15 passed: the changed rule followed its new version and the unchanged rule its original version. With the old wording, 10 of the same 15 failed. The prediction (at most 3 failures) held. The manager's U2 message still named the old location in 9 of the 15 cells, now as the location to stop using, and the worker wrote only the new version every time. Raw outputs are archived in the host's S3 bucket (`results/bench-wording-001.tgz`).
+
+The "both" failures in pilot 001 came from the ambiguous change message. Benchmark runs should use `change_message: "explicit"`.
