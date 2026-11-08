@@ -1,6 +1,6 @@
 # Benchmark pilot 001: do location rules survive worker compaction on real tasks?
 
-Written on November 8, 2026, before the run.
+Written on November 8, 2026, before the run. The outcome is at the end.
 
 ## Question
 
@@ -22,3 +22,26 @@ The controlled study found that rules about where to write a change note never f
 ## Prediction
 
 Headline pass rates are high in both cells and do not differ by more than 10 points. The location rules survive worker compaction on real tasks, as the changelog rule did in the controlled study. If the compacted cell is at least 15 points lower, the prediction fails and the v1 rules can measure compaction loss.
+
+## Outcome (added after the run)
+
+All 120 cells finished, at a cost of about $3.72 on GPT-6 Luna. The run used four groups of five cases. Three groups first ran out of host memory because every runner loaded the whole SWE-rebench parquet, so `load_rows` now filters while reading, and the groups were rerun. Raw outputs hold problem statements and are not committed. They are archived in the private S3 bucket of the benchmark host (`results/bench-results-2026-11-08.tgz`).
+
+| Cell | Headline pass, final files | Headline pass, worker's first U2 reply |
+|---|---|---|
+| `relay__none__existing` | 49/60 | 45/60 |
+| `relay__worker__existing` | 49/60 | 46/60 |
+
+The prediction held: the two cells did not differ. The comparison could not have shown a compaction effect, for two reasons.
+
+1. **The manager restated the rules with the second task.** Its first U2 delivery named a rule path in 119 of 120 cells. The worker never had to remember the rules, so compacting the worker's history could not matter. This matches `relay-001` in the controlled study. With a real manager, the history whose compaction can matter is the manager's.
+2. **Most failures came from an ambiguous change message, not from memory.** 20 of the 22 failures were "both": the worker wrote the note in the old location and the new one. In 17 of those 20, the manager's U2 message listed the old and new versions as both active. The user's change message says "A change to one of my rules, effective now: <changed wording>". It does not say which rule changes, and no changed wording says it replaces the old location. So the manager often treated the change as an added rule. The other 2 failures, both in the compacted cell, followed neither rule.
+
+Screening (`bench-screen-001`) found every rule passing in every repository: 294 of 294 finished runs correct.
+
+## What this changes
+
+- The change message should be unambiguous: number the rules in U0, say which rule changes in U1, and add "instead of <old location>" to each changed wording. This is one variable and should remove most "both" failures.
+- With a real manager that restates rules, worker-only compaction under relay tests nothing. The informative placements are manager compaction and both, or worker compaction under a condition where the manager does not restate the rules.
+- Location rules still have no evidence of compaction loss. Code-style rules remain the open addition.
+
