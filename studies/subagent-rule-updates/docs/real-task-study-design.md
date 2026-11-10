@@ -1,10 +1,12 @@
 # Design: does compaction stop agents applying effortful rules on real tasks?
 
-Status: draft for review. Nothing is built or run. Written on November 10, 2026.
+Status: draft, revised after an independent review. Nothing is built or run. Written on November 10, 2026.
 
 ## Claim under test
 
-On a toy repository, compaction kept a code rule in the summary but the agent stopped applying it. This happened for an effortful rule (read a tunable value with `app.settings.get`) and not for a light one (a constant in `app/config.py`), whether the rule was original or amended. Delivering the rules verbatim outside the summary removed the failures (`FINDINGS.md` sections 6 to 9). This study asks whether the same holds on real repositories and real tasks, and whether effort is the variable that decides it.
+Stage 1 claim: on real tasks, compaction makes an agent stop applying a code prescription it was given in conversation, while still stating it in the summary, and restating the rule verbatim next to the task fixes it. Whether effort is the cause is a later question.
+
+Background: on a toy repository, compaction kept a code rule in the summary but the agent stopped applying it. This happened for an effortful rule (read a tunable value with `app.settings.get`) and not for a light one (a constant in `app/config.py`), whether the rule was original or amended. Delivering the rules verbatim outside the summary removed the failures (`FINDINGS.md` sections 6 to 9). This study asks whether the same holds on real repositories and real tasks, and whether effort is the variable that decides it.
 
 ## What changes from the toy, and what stays
 
@@ -45,62 +47,67 @@ Inclusion, fixed before any compaction run:
 
 The full funnel is reported.
 
-## Rules: effort as a variable
+## Rules: two prescriptions with the same scope
 
-One nested ladder on one code event, adding a tunable value to non-test source. Each wording keeps the toy's scope ("tunable values such as thresholds, rates, limits, timeouts, or sizes").
+An independent review (GPT-6.1 Sol, November 10) found that a three-level ladder bundles effort with convention, wording, new files, and configuration semantics, so it cannot show that effort is the cause. Stage 1 therefore tests prescription loss, not effort. It uses two rules with identical scope wording and the same file infrastructure, differing in one step:
 
-- **L1 (light):** define it as a named UPPER_CASE constant at module level in the same file and use it.
-- **L2 (medium):** define it as a constant in `<pkg>/_tunables.py`, creating the file if needed, and import it where it is used. This matches the toy's `config.py` rule.
-- **L3 (heavy):** as L2, but the constant is read from an environment variable with a default and type conversion, for example `TIMEOUT = float(os.environ.get("<PKG>_TIMEOUT", "30"))`. This matches the toy's `settings.get` rule.
+- **R-const:** define each new tunable value (a threshold, rate, limit, timeout, retry count, or size) as a named UPPER_CASE constant at module level in the file that uses it, and use the constant.
+- **R-env:** define each new tunable value as a module-level UPPER_CASE constant in the file that uses it, read from an environment variable with a default and a type conversion, for example `TIMEOUT = float(os.environ.get("<PKG>_TIMEOUT", "30"))`, and use the constant.
 
-A deterministic AST checker labels each scored run by the highest level it satisfies: none (bare literal), L1, L2, or L3. A run follows its rule if it satisfies the told level. A failed L3 run can then be seen falling back to L2, L1, or a bare literal.
+R-env adds one step to R-const: the environment read. This mirrors the toy pair, where the `config.py` rule held and the `settings.get` rule failed, without creating a new module. Effort as a variable is deferred to a later stage with its own design.
 
-Each session also carries a light note rule, R_N: "List every tunable value you add, with its file, in `TUNABLES.md`." If R_N is followed while L3 fails, the worker recognized the tunable and skipped only the costly rule.
+Values are frozen at import. Explicit arguments must still override defaults. Tasks whose tests break under a compliant fix are found at screening and reported.
 
-Effort is measured, not asserted: extra diff size of compliant runs over no-rule runs per task, and whether the repository already uses environment variables or a constants module (`repo_prior`).
+## Scoring
+
+"A new tunable value" is a semantic judgment, so scoring has two steps.
+
+1. **Deterministic extraction.** From base and final source (untracked files included, captured before hidden tests run), extract every numeric literal added to non-test source other than 0, 1, and -1, with its site: function default, assignment, call argument, comparison, or arithmetic. Values that moved without changing are matched across versions and excluded.
+2. **Blind adjudication.** A reviewer who does not know the arm labels each extracted value as tunable or not. Reviewers are a model from a different family, validated against hand labels on a sample before use.
+
+For each tunable, record whether it is a named constant, whether it reads the environment, and whether the constant is used. A session follows its rule only if every tunable it adds follows the rule. Sessions are labeled follows, partial, violates, no tunable added, or unscorable. "No tunable added" is reported separately and never counted as compliance. A behavioral probe sets the environment variable and checks that behavior changes. Adversarial fixtures cover unused constants, dead code, shadowing, aliases, computed thresholds, and moved values.
 
 ## Screening (no history, no compaction)
 
-Per task: a no-rule arm and one arm per told level, 3 runs each. A task is kept if the no-rule arm leaves a bare literal in at least 2 of 3 runs and each told arm follows its level in 3 of 3. This also checks the checker on every task.
+Per task: a no-rule arm and one arm per rule, 3 runs each. A task is kept if the no-rule arm adds a bare tunable literal in at least 2 of 3 runs and each told arm follows its rule in at least 2 of 3. Gold eligibility does not guarantee the agent adds a tunable, so this is also the applicability check. The full funnel is reported, and screening is also the resource pilot: tokens, dollars, test time, memory, disk, and compaction rounds are measured there before the main run is sized.
 
 ## Conditions
 
-Sessions, each producing saved states, per task and level (L2, L3, and L1 if it screens):
+Per task and rule, each with its own independent preparation replicates:
 
-- `no_compact`
-- `compact`
+- `fresh`: the rules then the scored task, with no history.
+- `long_no_compact`: the same history, never compacted.
+- `compact`: the same history, compacted.
+- `compact_restated`: branched from each compacted state, with the verbatim rules restated next to the task, as a restating manager would.
 - `no_rule_compact`: the default under the same history.
 
-Branches from every saved compacted state:
+The system-prompt store is dropped from stage 1. It changes the rules' authority as well as their location, so it is a separate intervention.
 
-- **F1, rules next to the task:** the verbatim rules restated in the work order, as a restating manager would.
-- **F2, store at task time:** the verbatim rules in the system prompt.
+## History
 
-Later: store from the start, re-insertion after each compaction, the summary's own rule sentence pasted next to the task (salience against wording), the pi compactor, a second model.
+Read-only "summarize file X" tasks on the same base commit. The run checks that the checkout is at the base commit, since the container start does not. Files over the 64 KB read limit are skipped. The schedule does not depend on the gold patch: files are drawn in a seeded random order from the base commit's non-test source files, without excluding the files the fix touches. Live history, cumulative delivered content, truncations, compaction rounds, and final tail length are logged. This is a controlled stressor, not realistic coding history. Repository source still contains hardcoded values, which is the convention the rule asks the agent to break.
 
 ## Analysis
 
-- Unit: the compacted state. Each state gets the scored branch plus 5 resamples.
-- Per-task rate per arm, compared with a paired sign-flip permutation test over tasks, stratified by repository, two-sided, 20,000 permutations. A mixed logistic model with task and state effects as a robustness check.
-- Functional audit: set the environment variable and check that behavior changes, as `semantic_audit.py` did.
-- Task tests are reported separately and never folded into rule outcomes.
-- Final summaries are checked for whether they still state the rule, by keywords and a blind manual read.
+- Unit: the task. Independent preparation replicates per task and arm, with modest branch replication. Resampling is hierarchical, paired by task and history, and clustered by repository.
+- Primary contrast: the compaction-by-rule interaction. Does compaction raise violation more for R-env than for R-const?
+- Secondary: `compact` against `long_no_compact` for each rule. Restatement uses a noninferiority interval against `long_no_compact`, not close point estimates.
+- Sample size comes from a simulation with task and state heterogeneity, fixed before the main run. A simple illustration: if compaction made 15% of tasks fail completely and the rest not at all, a task-level sign-flip test would reach significance only 7% of the time with 20 tasks.
+- Task tests are reported separately, and also jointly with compliance.
 
-## Predictions (to be fixed before any compaction run)
+## Predictions (fixed after screening, before any compaction run)
 
-- P1: Without compaction, L2 and L3 are each followed in at least 90% of runs.
-- P2 (primary): L3 failure with compaction exceeds L3 failure without it by at least 15 points, p < 0.05.
-- P3: L3 failure with compaction exceeds L2 failure with compaction by at least 15 points, p < 0.05.
-- P4: At least 80% of compacted L3 failures come from states whose final summary still states the rule.
-- P5: F1 and F2 each bring compacted L3 failure to within 5 points of no compaction.
-- P6: R_N is followed in at least 90% of compacted sessions, including those where L3 failed.
-- P7: `no_rule_compact` leaves a bare literal in at least 90% of runs.
+- P1: In `fresh` and `long_no_compact`, both rules are followed in at least 90% of sessions that add a tunable.
+- P2 (primary): The compaction-by-rule interaction is positive: compaction raises R-env violation more than R-const violation.
+- P3: Most compacted R-env violations come from states whose final summary still states the rule.
+- P4: `compact_restated` is noninferior to `long_no_compact` within a margin fixed at freeze.
+- P5: `no_rule_compact` adds bare tunable literals in nearly every session that adds one.
 
-Decision rules: if P2 fails, report a null with its interval; a new rule set is a new pre-registration. If P2 holds and P3 fails with L2 also failing, the claim becomes "code rules fail" rather than "effort". If P5 holds, the fix claim stands.
+Decision rules: if P2 fails, report the null with its interval. If both rules fail equally under compaction, the claim becomes "compaction weakens code prescriptions," not one tied to the environment read.
 
-## Size and cost (planning)
+## Size and cost
 
-About 20 tasks, two levels, 3 compacted states per task and level with 6 runs each, 2 fix branches with 3 runs each, 3 uncompacted runs: roughly 1,300 scored runs plus about 120 compacted session preparations and screening. Estimated $60 to $100 on Luna, capped at $120, and about one to two days on the AWS host. Task images are 2 to 3 GB each, so about 20 tasks fit the 200 GB disk.
+Not fixed yet. Screening measures cost and time per run. An earlier estimate of about 1,300 scored runs works out to roughly 1,560 runs plus up to about 490 screening runs. At five minutes a run with three runners, that is over 40 hours, so the size will be set from measured numbers and the power simulation. Images are 2 to 3 GB each: about 100 GB for all 41 tasks, so screening runs in batches that remove images afterward. Three test containers at once may need more than 16 GB of memory, so the pilot measures that too.
 
 ## Risks
 
