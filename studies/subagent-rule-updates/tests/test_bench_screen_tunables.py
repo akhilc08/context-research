@@ -103,8 +103,12 @@ class AdjudicateTest(unittest.TestCase):
         from bench import adjudicate_tunables as A
         text = '```json\n{"values": [{"id": 0, "tunable": true, "reason": "timeout"}]}\n```'
         self.assertEqual(A.parse_verdicts(text, [0]), {0: {"tunable": True, "reason": "timeout"}})
+        prose = 'The first value is a cap.\n\n{"values": [{"id": 0, "tunable": false, "reason": "unit"}]} trailing'
+        self.assertFalse(A.parse_verdicts(prose, [0])[0]["tunable"])
         with self.assertRaises(ValueError):
             A.parse_verdicts('{"values": []}', [0])
+        with self.assertRaises(ValueError):
+            A.parse_verdicts("no json here", [0])
 
     def test_adjudicate_and_summarize_end_to_end(self):
         from bench import adjudicate_tunables as A

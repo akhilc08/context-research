@@ -55,8 +55,11 @@ def candidate_prompt(candidates: List[dict]) -> str:
 
 
 def parse_verdicts(text: str, ids: List[int]) -> Dict[int, dict]:
-    fence = re.fullmatch(r"\s*```(?:json)?\s*(.*?)\s*```\s*", text, re.S)
-    data = json.loads(fence.group(1) if fence else text)
+    # The judge sometimes writes a sentence or a fence around the object, so decode from where it starts.
+    start = text.find('{"values"')
+    if start < 0:
+        raise ValueError("no values object in the judge's reply")
+    data, _ = json.JSONDecoder().raw_decode(text[start:])
     verdicts = {int(v["id"]): {"tunable": bool(v["tunable"]), "reason": str(v.get("reason", ""))}
                 for v in data["values"]}
     if set(verdicts) != set(ids):
