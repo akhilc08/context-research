@@ -24,7 +24,7 @@ Kept:
 Changed:
 
 - The repository and the scored task are real: SWE-rebench V2 tasks in their Docker images, with the benchmark's container tools (`bench/container.py`).
-- The history is read-only work in the same repository at the task's base commit: "Read <file> and summarize its main classes and functions. Do not change any files." Files are chosen deterministically from the base commit's source files, excluding every file the gold patch or test patch touches, largest first, until the history passes about 450,000 characters. This replaces both the toy's synthetic log files and the benchmark's replayed trajectories. Replayed trajectories hardcode values themselves and would show the worker counterexamples to the rule. Read-only work cannot violate it.
+- The history is read-only work in the same repository at the task's base commit ("Read <file> and summarize its main classes and functions. Do not change any files."), described under History below. It replaces both the toy's synthetic log files and the benchmark's replayed trajectories, which hardcode values themselves and would show the worker counterexamples to the rule.
 
 Why a scripted manager that does not restate: a real manager under our prompt restated the rules in 119 of 120 delegations (pilot 001). That rate comes from our own manager prompt. Single agents given conventions in chat, and subagents briefed once at spawn and reused, hold rules only in their history. Restating is tested as a fix (arm F1), not assumed away. Codex keeps earlier user messages verbatim and should not show the failure; the paper should say so.
 
