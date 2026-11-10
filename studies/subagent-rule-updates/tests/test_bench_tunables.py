@@ -48,6 +48,10 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual(forms({"tests/test_net.py": (None, "LIMIT = 50\nx = LIMIT\n")}), [])
         self.assertEqual(forms({"pkg/conftest.py": (None, "LIMIT = 50\n")}), [])
 
+    def test_version_comparisons_are_skipped(self):
+        final = BASE + "\n\nimport sys\nif sys.version_info >= (3, 11) and x > 250:\n    pass\nif PY_VERSION < (3, 8):\n    pass\n"
+        self.assertEqual(forms({"pkg/net.py": (BASE, final)}), [(250.0, "inline")])
+
     def test_negative_values_count_once(self):
         final = BASE + "\n\ndef f(x):\n    return x > -5\n"
         self.assertEqual(forms({"pkg/net.py": (BASE, final)}), [(-5.0, "inline")])

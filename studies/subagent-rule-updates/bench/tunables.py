@@ -92,6 +92,14 @@ def _string_number(node: ast.AST) -> Optional[float]:
     return None
 
 
+def _mentions_version(node: ast.AST) -> bool:
+    for n in ast.walk(node):
+        name = n.attr if isinstance(n, ast.Attribute) else n.id if isinstance(n, ast.Name) else ""
+        if "version" in name.lower():
+            return True
+    return False
+
+
 def _names_used(tree: ast.AST) -> collections.Counter:
     return collections.Counter(n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load))
 
@@ -102,6 +110,10 @@ def _occurrences(source: str) -> List[dict]:
     used = _names_used(tree)
     # The operand of a folded minus is not counted separately, so -5 is one occurrence.
     folded = {id(n.operand) for n in ast.walk(tree) if isinstance(n, ast.UnaryOp) and _number(n) is not None}
+    # Numbers in a comparison against a version (sys.version_info >= (3, 11)) are never tunables.
+    for cmp in (n for n in ast.walk(tree) if isinstance(n, ast.Compare)):
+        if any(_mentions_version(side) for side in [cmp.left] + cmp.comparators):
+            folded.update(id(n) for n in ast.walk(cmp))
     found: List[dict] = []
     seen = set()
 
