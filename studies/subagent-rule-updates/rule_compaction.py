@@ -197,8 +197,8 @@ def warmup(client: Any, history: list[dict], system: str, stepdir: Path, tag: st
     return warm
 
 
-def execute(client: Any, output: Path, config: dict) -> None:
-    for rep in range(config["repetitions"]):
+def execute(client: Any, output: Path, config: dict, start_rep: int = 0) -> None:
+    for rep in range(start_rep, config["repetitions"]):
         repdir = output / f"rep-{rep:02d}"
         sessions = config.get("sessions", list(CHANGES))
         pairs = [(s, c) for s in sessions for c in config["conditions"] if planned(config, s, c, rep)]
@@ -223,7 +223,11 @@ def execute(client: Any, output: Path, config: dict) -> None:
             history, record = prepare(client, warm, change, condition, repdir / "prep" / key, f"rep{rep}/prep/{key}", config)
             save(repdir / "prep" / key / "record.json", record)
             if not record["setup_valid"]:
-                raise RuntimeError(f"Invalid preparation for {key} in repetition {rep}")
+                # The state is dropped, not the run: its branches are not executed and the drop is logged.
+                print(f"INVALID_PREP {rep}:{key}", flush=True)
+                with (output / "invalid_preps.jsonl").open("a") as f:
+                    f.write(json.dumps({"rep": rep, "key": key}) + "\n")
+                continue
             prepared[key] = (history, record["system"])
         branches = [(key, task) for key in prepared for task in S.TASKS]
         random.Random(config["order_seed"] + rep).shuffle(branches)
@@ -303,12 +307,34 @@ def analyze(output: Path) -> dict:
     return summary
 
 
+def make_client(output: Path, selected: dict, config: dict) -> Any:
+    """OpenRouter by default. "backend": "bedrock" uses Amazon Bedrock, and "anthropic" the Anthropic API
+    directly (key from ANTHROPIC_API_KEY), both through bedrock_provider.BedrockClient."""
+    if selected.get("backend") in ("bedrock", "anthropic"):
+        from bedrock_provider import AnthropicRuntime, BedrockClient
+        extra = {}
+        if selected["backend"] == "anthropic":
+            from provider import load_key
+            extra = {"runtime": AnthropicRuntime(load_key(name="ANTHROPIC_API_KEY")), "provider_name": "Anthropic"}
+        return BedrockClient(output, model=selected["id"], region=selected.get("region", "anthropic-api"), **extra,
+                             prices_per_mtok=selected["prices_per_mtok"], budget_usd=selected["budget_usd"],
+                             max_calls=config["max_provider_calls"], temperature=selected.get("temperature", config["temperature"]),
+                             max_tokens=config["max_output_tokens"], timeout_retries=config.get("timeout_retries", 0),
+                             throttle_retries=config.get("throttle_retries", 8))
+    from provider import OpenRouterClient
+    return OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
+                            budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
+                            temperature=config["temperature"], max_tokens=config["max_output_tokens"],
+                            reasoning_effort=config["reasoning_effort"], timeout_retries=config.get("timeout_retries", 0))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=HERE / "configs/rule-compaction.json")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--model-index", type=int, default=0)
     parser.add_argument("--repetitions", type=int, help="Override the config, for a pilot")
+    parser.add_argument("--start-rep", type=int, default=0, help="First repetition to run, to continue a stopped run in a new output")
     parser.add_argument("--live", action="store_true", help="Authorize paid provider calls for this fixed config")
     parser.add_argument("--analyze", type=Path, help="Recompute summary.json and tables.md for a model directory")
     args = parser.parse_args()
@@ -324,15 +350,17 @@ def main() -> int:
     if config["total_budget_usd"] != sum(m["budget_usd"] for m in config["models"]):
         raise ValueError("Per-model caps must sum to the authorized total")
     selected = config["models"][args.model_index]
-    from provider import OpenRouterClient, load_key
-    load_key()
+    if selected.get("backend") not in ("bedrock", "anthropic"):
+        from provider import load_key
+        load_key()
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".run.lock").open("a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         output = root / f"model-{args.model_index}"
         output.mkdir()
-        for name in ("scenarios.py", "worker.py", "compaction.py", "pi_compaction.py", "pi_compaction_prompts.json", "rule_compaction.py", "provider.py"):
+        for name in ("scenarios.py", "worker.py", "compaction.py", "pi_compaction.py", "pi_compaction_prompts.json", "rule_compaction.py",
+                     "provider.py", "bedrock_provider.py"):
             (output / "source").mkdir(exist_ok=True)
             shutil.copyfile(HERE / name, output / "source" / name)
         shutil.copyfile(args.config, output / "source" / "config.json")
@@ -345,13 +373,10 @@ def main() -> int:
             "relays": {s: relay_message(s) for s in config.get("sessions", CHANGES)}, "sessions": SESSIONS,
             "store_systems": {str(c): store_system(c) for c in (None, *CHANGES)}, "reinserts": {c: reinsert_message(c) for c in CHANGES},
             "tasks": {t: task_message(t) for t in S.TASKS}})
-        client = OpenRouterClient(output, model=selected["id"], provider_name=selected["provider"],
-                                  budget_usd=selected["budget_usd"], max_calls=config["max_provider_calls"],
-                                  temperature=config["temperature"], max_tokens=config["max_output_tokens"],
-                                  reasoning_effort=config["reasoning_effort"], timeout_retries=config.get("timeout_retries", 0))
+        client = make_client(output, selected, config)
         failure = None
         try:
-            execute(client, output, config)
+            execute(client, output, config, args.start_rep)
         except Exception as exc:
             failure = {"type": type(exc).__name__, "message": str(exc)}
             save(output / "run_error.json", failure)

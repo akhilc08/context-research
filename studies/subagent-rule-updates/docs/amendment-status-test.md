@@ -91,3 +91,55 @@ State-level failure rates on the low-stock task after compaction, pooled with th
 
 Without compaction, O-S and A-C followed the config rule in 20 of 20 branches. The functional audit agreed with the classifier in all 544 new branches and resamples.
 
+
+## Replication on Claude models (pre-registered)
+
+Written on November 20, 2026, before the run.
+
+### Question
+
+Does the content effect hold on other models? On GPT-6 Luna, after compaction, the `settings.get` rule failed far more often than the `config.py` rule, whether original or amended. If Claude models apply both rules after compaction, the effect is a Luna property, not a property of compaction.
+
+### Design
+
+The same protocol, sessions and tasks as `rule-compaction-amend-001` (`configs/rule-compaction-amendment-claude.json`), on Claude Sonnet 5.5 and Claude Haiku 5.5, each a separate run.
+
+- All four cells (O-C, A-C, O-S, A-S) get 20 compacted sessions and 5 uncompacted ones. Nothing is pooled with Luna runs.
+- The calls go to the Anthropic API directly (`bedrock_provider.py`, `AnthropicRuntime`), because this AWS account has no Bedrock access to Claude 5.5 models yet.
+- Deviations from the Luna runs, all forced by the provider. Temperature is not sent, because Claude 5.5 models reject it, so they sample at their default. Extended thinking is off, where Luna ran at low reasoning effort. Prompt caching uses explicit cache points.
+- One tool call per turn, as in the Luna runs.
+
+### Analysis
+
+The analysis is the same as above, per model, with each state's scored low-stock branch as its only sample. Resamples may be added afterwards and will be reported separately.
+
+- Primary: content effect, pooled. The mean state failure rate of O-S and A-S together against O-C and A-C together, two-sided permutation test.
+- Secondary: the two content comparisons within status, the two status comparisons, and compacted against uncompacted `settings.get` sessions (Fisher exact test by session).
+
+### Prediction and decision rule
+
+- The effect replicates on a model if the pooled content difference is at least 0.15 with p below 0.05, and uncompacted `settings.get` sessions fail at most 1 of 10.
+- It fails to replicate if the difference is under 0.15. That would mean the failure is specific to Luna or to weaker models, and the real-task study should not assume it.
+
+Prior belief before running: about 40% that Sonnet 5.5 replicates and 60% that Haiku 5.5 does. Stronger models may keep applying a rule they can still read in the summary.
+
+### Cost
+
+Estimated about $100 to $150 for Sonnet 5.5 and $5 to $10 for Haiku 5.5, with caps of $200 and $20. A one-repetition Haiku pilot runs first to check the pipeline. The pilot (`rule-compaction-claude-pilot-001`, 16 of 16 branches finished) cost $1.24, which puts the full Haiku 5.5 run near $15. Its cap was raised to $30 before the main run. The same pilot puts the full Sonnet 5.5 run near $300, so its cap is $350. Sonnet 5.5 runs on Amazon Bedrock (`configs/rule-compaction-amendment-claude-bedrock.json`) once the account has access, with the same request settings; Haiku 5.5 runs on the Anthropic API.
+
+### Result: Claude Haiku 5.5
+
+Run on November 20, 2026, in `rule-compaction-claude-001` (repetitions 0 to 14) and `rule-compaction-claude-002` (repetitions 15 to 19). Cost $12.63.
+
+Deviation: the first run stopped at repetition 15. In a read-only preparation step, Haiku wrote a stray `.tmp` file, and the runner then aborted the whole run. The runner now drops only the affected session, logs it to `invalid_preps.jsonl`, and has a `--start-rep` option. The remaining repetitions ran in a second output folder with the same configuration and order seeds. No session was dropped in that second run.
+
+Rule failures on the scored low-stock branch:
+
+| Cell | Compacted | Uncompacted |
+|---|---|---|
+| O-C (config.py, original) | 4/20 | 0/5 |
+| A-C (config.py, amended) | 0/20 | 0/5 |
+| O-S (settings.get, original) | 0/20 | 0/5 |
+| A-S (settings.get, amended) | 1/20 | 0/5 |
+
+The pooled content difference is −0.075 (p = 0.36). It has the opposite sign to Luna and is well under the 0.15 threshold, so **the effect does not replicate on Haiku 5.5**. Uncompacted `settings.get` sessions failed 0 of 10. The bulk-discount branch agrees (−0.025, p = 1.0).

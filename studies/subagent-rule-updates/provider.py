@@ -52,13 +52,13 @@ class BudgetExceeded(ProviderError):
     """A request would exceed the dollar or request cap."""
 
 
-def load_key(repository_root: Path | None = None) -> str:
+def load_key(repository_root: Path | None = None, name: str = "OPENROUTER_API_KEY") -> str:
     """Read environment, then repository .env, without modifying os.environ.
 
     Supports simple KEY=value, export KEY=value, and matching outer quotes; does
     not execute shell syntax or search the working directory/home directory.
     """
-    value = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    value = os.environ.get(name, "").strip()
     if value:
         return value
     path = (repository_root or REPOSITORY_ROOT) / ".env"
@@ -68,7 +68,7 @@ def load_key(repository_root: Path | None = None) -> str:
             if line.startswith("export "):
                 line = line[7:].lstrip()
             key, sep, value = line.partition("=")
-            if sep and key.strip() == "OPENROUTER_API_KEY":
+            if sep and key.strip() == name:
                 value = value.strip()
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                     value = value[1:-1]
@@ -76,7 +76,7 @@ def load_key(repository_root: Path | None = None) -> str:
                     value = value.split(" #", 1)[0].rstrip()
                 if value:
                     return value
-    raise ProviderError("OPENROUTER_API_KEY is not configured")
+    raise ProviderError(name + " is not configured")
 
 
 def _transport(method: str, url: str, *, headers: dict, body: bytes | None):
